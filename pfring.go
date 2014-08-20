@@ -24,7 +24,7 @@ func newPfringIO(ifName string, promisc bool, snaplen int, bufSz int) (handle *P
 	if promisc {
 		flags = pfring.FlagPromisc
 	}
-	ring, err := pfring.NewRing(ifName, uint32(bufSz), flags)
+	ring, err := pfring.NewRing(ifName, uint32(snaplen), flags)
 	if err != nil {
 		return
 	}
