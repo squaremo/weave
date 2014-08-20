@@ -38,9 +38,9 @@ func (router *Router) UsingPassword() bool {
 }
 
 func (router *Router) Start() {
-	// we need two pcap handles since they aren't thread-safe
-	pio, err := NewPcapIO(router.Iface.Name, router.BufSz)
+	pio, err := NewPfringIO(router.Iface.Name, router.BufSz)
 	checkFatal(err)
+	// can't get pfring injection to work; so use pcap instead
 	po, err := NewPcapO(router.Iface.Name)
 	checkFatal(err)
 	router.ConnectionMaker = StartConnectionMaker(router)
