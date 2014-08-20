@@ -39,6 +39,9 @@ func newPfringIO(ifName string, promisc bool, snaplen int, bufSz int) (handle *P
 		return
 	}
 	po, err := NewPcapO(ifName) // [1]
+	if err != nil {
+		return
+	}
 	return &PfringIO{handle: ring, buf: make([]byte, bufSz), po: po}, nil
 }
 
