@@ -26,9 +26,15 @@ type ifReq struct {
 	pad   [C.IFREQ_SIZE - C.IFNAMSIZ - 2]byte
 }
 
+// [1] can't get tap output to work, so use pcap instead.
+// Unfortunately that also means, at least in this quick-hack version,
+// we need to hardcode the interface for pcap, since we cannot inject
+// on a tap interface with pcap.
+
 type TapIO struct {
 	handle *os.File
 	buf    []byte
+	po     PacketSink // [1]
 }
 
 func NewTapIO(ifName string, bufSz int) (PacketSourceSink, error) {
@@ -36,15 +42,20 @@ func NewTapIO(ifName string, bufSz int) (PacketSourceSink, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TapIO{handle: handle, buf: make([]byte, bufSz)}, nil
+	po, err := NewPcapO("ethwe") // [1]
+	return &TapIO{handle: handle, buf: make([]byte, bufSz), po: po}, nil
 }
 
-func NewTapO(ifName string) (PacketSink, error) {
-	handle, err := newTap(ifName)
-	if err != nil {
-		return nil, err
-	}
-	return &TapIO{handle: handle}, nil
+func NewTapO(ifName string) (po PacketSink, err error) {
+	// [1]
+	//
+	// handle, err := newTap(ifName)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// return &TapIO{handle: handle}, nil
+	po, err = NewPcapO("ethwe")
+	return
 }
 
 func newTap(ifName string) (*os.File, error) {
@@ -71,6 +82,9 @@ func (pi *TapIO) ReadPacket() ([]byte, error) {
 }
 
 func (po *TapIO) WritePacket(data []byte) error {
-	_, err := po.handle.Write(data)
-	return err
+	// [1]
+	//
+	// _, err := po.handle.Write(data)
+	// return err
+	return po.po.WritePacket(data)
 }

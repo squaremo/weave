@@ -40,8 +40,7 @@ func (router *Router) UsingPassword() bool {
 func (router *Router) Start() {
 	pio, err := NewTapIO(router.Iface.Name, router.BufSz)
 	checkFatal(err)
-	// can't get tap injection to work; so use pcap instead
-	po, err := NewPcapO("ethwe")
+	po, err := NewTapO(router.Iface.Name)
 	checkFatal(err)
 	router.ConnectionMaker = StartConnectionMaker(router)
 	router.Topology = StartTopology(router)
