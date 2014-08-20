@@ -3,7 +3,7 @@ set -e
 
 BRIDGE=weave
 CONTAINER_IFNAME=ethwe
-MTU=65535
+MTU=65521 # higher doesn't work for tap devices. go figure.
 
 COMMAND=$1
 IPADDR=$2
@@ -32,16 +32,23 @@ MACADDR=$(</sys/class/net/$BRIDGE/address)
 
 case "$COMMAND" in
     launch)
-        CONTAINER=$(docker run -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS zettio/weave -name $MACADDR $@)
+        CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS zettio/weave -name $MACADDR $@)
+        pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
+        TAP_IFNAME=wetap
+        TAP_BRIDGE=webr
+        docker-ns $CONTAINER ip link add dev $TAP_BRIDGE type bridge
+        docker-ns $CONTAINER ip link set dev $TAP_BRIDGE up
+        docker-ns $CONTAINER ip link set dev $CONTAINER_IFNAME master $TAP_BRIDGE
+        docker-ns $CONTAINER ip tuntap add dev $TAP_IFNAME mode tap one_queue
+        docker-ns $CONTAINER ip link set dev $TAP_IFNAME mtu $MTU master $TAP_BRIDGE promisc on up
         IFACE=eth0
         ;;
     run)
         CONTAINER=$(docker run -d $@)
+        pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
         IFACE=$CONTAINER_IFNAME
         ;;
 esac
-
-pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
 
 docker-ns $CONTAINER ethtool -K $IFACE tx off > /dev/null
 

@@ -38,10 +38,10 @@ func (router *Router) UsingPassword() bool {
 }
 
 func (router *Router) Start() {
-	// we need two pcap handles since they aren't thread-safe
-	pio, err := NewPcapIO(router.Iface.Name, router.BufSz)
+	pio, err := NewTapIO(router.Iface.Name, router.BufSz)
 	checkFatal(err)
-	po, err := NewPcapO(router.Iface.Name)
+	// can't get tap injection to work; so use pcap instead
+	po, err := NewPcapO("ethwe")
 	checkFatal(err)
 	router.ConnectionMaker = StartConnectionMaker(router)
 	router.Topology = StartTopology(router)
