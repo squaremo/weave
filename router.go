@@ -40,8 +40,7 @@ func (router *Router) UsingPassword() bool {
 func (router *Router) Start() {
 	pio, err := NewPfringIO(router.Iface.Name, router.BufSz)
 	checkFatal(err)
-	// can't get pfring injection to work; so use pcap instead
-	po, err := NewPcapO(router.Iface.Name)
+	po, err := NewPfringO(router.Iface.Name)
 	checkFatal(err)
 	router.ConnectionMaker = StartConnectionMaker(router)
 	router.Topology = StartTopology(router)

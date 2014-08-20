@@ -4,9 +4,12 @@ import (
 	"code.google.com/p/gopacket/pfring"
 )
 
+// [1] can't get pfring output to work, so use pcap instead
+
 type PfringIO struct {
 	handle *pfring.Ring
 	buf    []byte
+	po     PacketSink // [1]
 }
 
 func NewPfringIO(ifName string, bufSz int) (pio PacketSourceSink, err error) {
@@ -15,7 +18,8 @@ func NewPfringIO(ifName string, bufSz int) (pio PacketSourceSink, err error) {
 }
 
 func NewPfringO(ifName string) (po PacketSink, err error) {
-	po, err = newPfringIO(ifName, false, 0, 0)
+	// [1] po, err = newPfringIO(ifName, false, 0, 0)
+	po, err = NewPcapO(ifName)
 	return
 }
 
@@ -34,7 +38,8 @@ func newPfringIO(ifName string, promisc bool, snaplen int, bufSz int) (handle *P
 	if err = ring.Enable(); err != nil {
 		return
 	}
-	return &PfringIO{handle: ring, buf: make([]byte, bufSz)}, nil
+	po, err := NewPcapO(ifName) // [1]
+	return &PfringIO{handle: ring, buf: make([]byte, bufSz), po: po}, nil
 }
 
 
@@ -47,5 +52,6 @@ func (pi *PfringIO) ReadPacket() ([]byte, error) {
 }
 
 func (po *PfringIO) WritePacket(data []byte) error {
-	return po.handle.WritePacketData(data)
+	// [1] return po.handle.WritePacketData(data)
+	return po.po.WritePacket(data)
 }
