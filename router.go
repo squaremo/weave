@@ -38,13 +38,19 @@ func (router *Router) UsingPassword() bool {
 }
 
 func (router *Router) Start() {
+	// We use a single tap handle across threads. No idea whether that
+	// is safe, but using multiple handles a) requires multiple tap
+	// devices (attempting to open the same tap device twice results
+	// in a "device busy" error), which is a pain, and b) when
+	// injecting on a different device than capturing, the capturing
+	// device sees the injection (which is inconvenient but not
+	// disastrous) and, more importantly, seems to be guaranteed to
+	// miss any packet sent as a reply.
 	pio, err := NewTapIO(router.Iface.Name, router.BufSz)
-	checkFatal(err)
-	po, err := NewTapO(router.Iface.Name)
 	checkFatal(err)
 	router.ConnectionMaker = StartConnectionMaker(router)
 	router.Topology = StartTopology(router)
-	router.UDPListener = router.listenUDP(Port, po)
+	router.UDPListener = router.listenUDP(Port, pio)
 	router.listenTCP(Port)
 	router.sniff(pio)
 }
