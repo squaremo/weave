@@ -67,11 +67,7 @@ func (pi *TapIO) ReadPacket() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// we need to make a copy since we hand off this data to another
-	// goroutine, and would stomp on it with a subsequent read
-	res := make([]byte, n, n)
-	copy(res, pi.buf[:n])
-	return res, nil
+	return pi.buf[:n], nil
 }
 
 func (po *TapIO) WritePacket(data []byte) error {
