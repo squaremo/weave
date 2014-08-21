@@ -5,6 +5,7 @@ BRIDGE=weave
 CONTAINER_IFNAME=ethwe
 MTU=65521 # higher doesn't work for tap devices. go figure.
 
+SCRIPT_DIR=$(dirname $(readlink -f $0))
 COMMAND=$1
 IPADDR=$2
 shift 2
@@ -32,24 +33,24 @@ MACADDR=$(</sys/class/net/$BRIDGE/address)
 
 case "$COMMAND" in
     launch)
-        CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS zettio/weave -name $MACADDR $@)
-        pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
+        CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS zettio/weave -name $MACADDR "$@")
+        ${SCRIPT_DIR}/pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
         TAP_IFNAME=wetap
         TAP_BRIDGE=webr
-        docker-ns $CONTAINER ip link add dev $TAP_BRIDGE type bridge
-        docker-ns $CONTAINER ip link set dev $TAP_BRIDGE up
-        docker-ns $CONTAINER ip link set dev $CONTAINER_IFNAME master $TAP_BRIDGE
-        docker-ns $CONTAINER ip tuntap add dev $TAP_IFNAME mode tap one_queue
-        docker-ns $CONTAINER ip link set dev $TAP_IFNAME mtu $MTU master $TAP_BRIDGE promisc on up
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip link add dev $TAP_BRIDGE type bridge
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $TAP_BRIDGE up
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $CONTAINER_IFNAME master $TAP_BRIDGE
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip tuntap add dev $TAP_IFNAME mode tap one_queue
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $TAP_IFNAME mtu $MTU master $TAP_BRIDGE promisc on up
         IFACE=eth0
         ;;
     run)
-        CONTAINER=$(docker run -d $@)
-        pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
+        CONTAINER=$(docker run -d "$@")
+        ${SCRIPT_DIR}/pipework $BRIDGE -i $CONTAINER_IFNAME $CONTAINER $IPADDR 1>&2
         IFACE=$CONTAINER_IFNAME
         ;;
 esac
 
-docker-ns $CONTAINER ethtool -K $IFACE tx off > /dev/null
+${SCRIPT_DIR}/docker-ns $CONTAINER ethtool -K $IFACE tx off > /dev/null
 
 echo $CONTAINER
