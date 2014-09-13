@@ -13,8 +13,8 @@ func (conn *LocalConnection) ensureForwarders() error {
 	if conn.forwardChan != nil || conn.forwardChanDF != nil {
 		return nil
 	}
-	// only thing that can error, so do it earlier
-	rawUDPSender, err := NewRawUDPSender(conn)
+	udpSender := NewSimpleUDPSender(conn)
+	udpSenderDF, err := NewRawUDPSender(conn) // only thing that can error, so do it early
 	if err != nil {
 		return err
 	}
@@ -29,22 +29,31 @@ func (conn *LocalConnection) ensureForwarders() error {
 		encryptorDF = NewNonEncryptor(conn.local.NameByte)
 	}
 
-	// The forward chans in the conn struct are read by other
-	// processes, so we have to use locks.
 	var (
 		forwardChan   = make(chan *ForwardedFrame, ChannelSize)
 		forwardChanDF = make(chan *ForwardedFrame, ChannelSize)
 		stopForward   = make(chan interface{}, 0)
 		stopForwardDF = make(chan interface{}, 0)
+		verifyPMTU    = make(chan int, ChannelSize)
 	)
+	//NB: only forwarderDF can ever encounter EMSGSIZE errors, and
+	//thus perform PMTU verification
+	forwarder := NewForwarder(conn, forwardChan, stopForward, nil, encryptor, udpSender, DefaultPMTU)
+	forwarderDF := NewForwarder(conn, forwardChanDF, stopForwardDF, verifyPMTU, encryptorDF, udpSenderDF, DefaultPMTU)
+
+	// Various fields in the conn struct are read by other processes,
+	// so we have to use locks.
 	conn.Lock()
 	conn.forwardChan = forwardChan
 	conn.forwardChanDF = forwardChanDF
 	conn.stopForward = stopForward
 	conn.stopForwardDF = stopForwardDF
+	conn.verifyPMTU = verifyPMTU
+	conn.effectivePMTU = forwarder.unverifiedPMTU
 	conn.Unlock()
-	go conn.forwarderLoop(forwardChan, stopForward, encryptor, NewSimpleUDPSender(conn), DefaultPMTU)
-	go conn.forwarderLoop(forwardChanDF, stopForwardDF, encryptorDF, rawUDPSender, conn.clientPMTU)
+
+	go forwarder.Run()
+	go forwarderDF.Run()
 
 	return nil
 }
@@ -63,106 +72,6 @@ func (conn *LocalConnection) stopForwarders() {
 	}
 }
 
-func (conn *LocalConnection) forwarderLoop(forwardCh <-chan *ForwardedFrame, stop <-chan interface{}, enc Encryptor, udpSender UDPSender, pmtu int) {
-	defer udpSender.Shutdown()
-	// The pmtu governs the max size of msg we can pass to the
-	// udpSender. udpSender will add in the UDP/IP headers
-	var pmtuVerifyTick <-chan time.Time
-	var clientPMTU int
-	maxPayload := pmtu - UDPOverhead
-	updateClientPMTU := func() {
-		conn.setClientPMTU(clientPMTU)
-		pmtuVerifyFrame := &ForwardedFrame{
-			srcPeer: conn.local,
-			dstPeer: conn.remote,
-			frame:   make([]byte, clientPMTU+EthernetOverhead)}
-		for cnt := 0; cnt < 10; cnt += 1 {
-			enc.AppendFrame(pmtuVerifyFrame)
-			udpSender.Send(enc.Bytes())
-		}
-		pmtuVerifyTick = time.After(PMTUVerifyTimeout)
-	}
-	appendFrame := func(frame *ForwardedFrame) bool {
-		frameLen := len(frame.frame)
-		if enc.TotalLen()+enc.FrameOverhead()+frameLen > maxPayload {
-			return false
-		}
-		enc.AppendFrame(frame)
-		return true
-	}
-	flush := func() {
-		err := udpSender.Send(enc.Bytes())
-		if err != nil {
-			if ftbe, ok := err.(FrameTooBigError); ok {
-				maxPayload = ftbe.PMTU - UDPOverhead
-				clientPMTU = maxPayload - enc.PacketOverhead() - enc.FrameOverhead() - EthernetOverhead
-				updateClientPMTU()
-			} else if PosixError(err) == syscall.ENOBUFS {
-				// TODO handle this better
-			} else {
-				conn.CheckFatal(err)
-			}
-		}
-	}
-	logDrop := func(frame *ForwardedFrame) {
-		conn.log("dropping too big frame during forwarding: frame len:", len(frame.frame), "; PMTU:", pmtu)
-	}
-	// We want to drain before exiting otherwise we could get the
-	// packet sniffer or udp listener blocked on sending to a full
-	// chan
-	drain := func() {
-		for {
-			select {
-			case <-forwardCh:
-			default:
-				return
-			}
-		}
-	}
-	var flushed, ok bool
-	var frame *ForwardedFrame
-	for {
-		flushed = false
-		select {
-		case <-stop:
-			drain()
-			return
-		case <-pmtuVerifyTick:
-			// We only do this case here when we know the buffers are
-			// all empty so that we don't risk appending verify-frames
-			// to other data.
-			pmtuVerifyTick = nil
-			if !conn.isClientPMTUVerfied() {
-				clientPMTU -= 10
-				updateClientPMTU()
-			}
-		case frame = <-forwardCh:
-			if !appendFrame(frame) {
-				logDrop(frame)
-				continue
-			}
-			for !flushed {
-				select {
-				case frame, ok = <-forwardCh:
-					if !ok {
-						return
-					}
-					if !appendFrame(frame) {
-						flush()
-						if !appendFrame(frame) {
-							logDrop(frame)
-							flushed = true
-						}
-					}
-				default:
-					flush()
-					flushed = true
-				}
-			}
-		}
-	}
-}
-
 // Called from peer.Relay[Broadcast] which is itself invoked from
 // router (both UDP listener process and sniffer process). Also called
 // from connection's heartbeat process, and from the connection's TCP
@@ -172,7 +81,7 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 	var (
 		forwardChan   = conn.forwardChan
 		forwardChanDF = conn.forwardChanDF
-		clientPMTU    = conn.clientPMTU
+		effectivePMTU = conn.effectivePMTU
 		stackFrag     = conn.stackFrag
 	)
 	conn.RUnlock()
@@ -182,12 +91,11 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 		return nil
 	}
 	if df {
-		if len(frame.frame)-EthernetOverhead <= clientPMTU {
+		if !frameTooBig(frame, effectivePMTU) {
 			forwardChanDF <- frame
 			return nil
-		} else {
-			return FrameTooBigError{PMTU: clientPMTU, frame: frame}
 		}
+		return FrameTooBigError{EPMTU: effectivePMTU}
 	} else {
 		if stackFrag || dec == nil || len(dec.decoded) < 2 {
 			forwardChan <- frame
@@ -195,7 +103,7 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 		}
 		// Don't have trustworthy stack, so we're going to have to
 		// send it DF in any case.
-		if len(frame.frame)-EthernetOverhead <= clientPMTU {
+		if !frameTooBig(frame, effectivePMTU) {
 			forwardChanDF <- frame
 			return nil
 		}
@@ -203,10 +111,20 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 		// We can't trust the stack to fragment, we have IP, and we
 		// have a frame that's too big for the MTU, so we have to
 		// fragment it ourself.
-		return fragment(dec.eth, dec.ip, clientPMTU, frame, func(segFrame *ForwardedFrame) {
+		return fragment(dec.eth, dec.ip, effectivePMTU, frame, func(segFrame *ForwardedFrame) {
 			forwardChanDF <- segFrame
 		})
 	}
+}
+
+func frameTooBig(frame *ForwardedFrame, effectivePMTU int) bool {
+	// We capture/forward complete ethernet frames. Therefore the
+	// frame length includes the ethernet header. However, MTUs
+	// operate at the IP layer and thus do not include the ethernet
+	// header. To put it another way, when a sender that was told an
+	// MTU of M sends an IP packet of exactly that length, we will
+	// capture/forward M + EthernetOverhead bytes of data.
+	return len(frame.frame) > effectivePMTU+EthernetOverhead
 }
 
 func fragment(eth layers.Ethernet, ip layers.IPv4, pmtu int, frame *ForwardedFrame, forward func(*ForwardedFrame)) error {
@@ -215,7 +133,7 @@ func fragment(eth layers.Ethernet, ip layers.IPv4, pmtu int, frame *ForwardedFra
 	headerSize := int(ip.IHL) * 4
 	// &^ is bit clear (AND NOT). So here we're clearing the lowest 3
 	// bits.
-	maxSegmentSize := (pmtu - EthernetOverhead - headerSize) &^ 7
+	maxSegmentSize := (pmtu - headerSize) &^ 7
 	opts := gopacket.SerializeOptions{
 		FixLengths:       false,
 		ComputeChecksums: true}
@@ -261,6 +179,158 @@ func fragment(eth layers.Ethernet, ip layers.IPv4, pmtu int, frame *ForwardedFra
 		forward(&segFrame)
 	}
 	return nil
+}
+
+// Forwarder
+
+func NewForwarder(conn *LocalConnection, ch <-chan *ForwardedFrame, stop <-chan interface{}, verifyPMTU <-chan int, enc Encryptor, udpSender UDPSender, pmtu int) *Forwarder {
+	fwd := &Forwarder{
+		conn:       conn,
+		ch:         ch,
+		stop:       stop,
+		verifyPMTU: verifyPMTU,
+		enc:        enc,
+		udpSender:  udpSender}
+	fwd.unverifiedPMTU = pmtu - fwd.effectiveOverhead()
+	fwd.maxPayload = pmtu - UDPOverhead
+	return fwd
+}
+
+func (fwd *Forwarder) Run() {
+	defer fwd.udpSender.Shutdown()
+	var flushed, ok bool
+	var frame *ForwardedFrame
+	for {
+		flushed = false
+		select {
+		case <-fwd.stop:
+			fwd.drain()
+			return
+		case <-fwd.verifyPMTUTick:
+			// We only do this case here when we know the buffers are
+			// all empty so that we don't risk appending verify-frames
+			// to other data.
+			fwd.verifyPMTUTick = nil
+			if fwd.pmtuVerified {
+				continue
+			}
+			if fwd.pmtuVerifyCount > 0 {
+				fwd.pmtuVerifyCount--
+				fwd.attemptVerifyEffectivePMTU()
+			} else {
+				// we've exceeded the verification attempts of the
+				// unverifiedPMTU
+				fwd.lowestBadPMTU = fwd.unverifiedPMTU
+				fwd.verifyEffectivePMTU((fwd.highestGoodPMTU + fwd.lowestBadPMTU) / 2)
+			}
+		case epmtu := <-fwd.verifyPMTU:
+			if fwd.pmtuVerified || epmtu != fwd.unverifiedPMTU {
+				continue
+			}
+			if epmtu+1 < fwd.lowestBadPMTU {
+				fwd.highestGoodPMTU = fwd.unverifiedPMTU // = epmtu
+				fwd.verifyEffectivePMTU((fwd.highestGoodPMTU + fwd.lowestBadPMTU) / 2)
+			} else {
+				fwd.pmtuVerified = true
+				fwd.maxPayload = epmtu + fwd.effectiveOverhead() - UDPOverhead
+				fwd.conn.setEffectivePMTU(epmtu)
+				fwd.conn.log("Effective PMTU verified at", epmtu)
+			}
+		case frame = <-fwd.ch:
+			if !fwd.appendFrame(frame) {
+				fwd.logDrop(frame)
+				continue
+			}
+			for !flushed {
+				select {
+				case frame, ok = <-fwd.ch:
+					if !ok {
+						return
+					}
+					if !fwd.appendFrame(frame) {
+						fwd.flush()
+						if !fwd.appendFrame(frame) {
+							fwd.logDrop(frame)
+							flushed = true
+						}
+					}
+				default:
+					fwd.flush()
+					flushed = true
+				}
+			}
+		}
+	}
+}
+
+func (fwd *Forwarder) effectiveOverhead() int {
+	return UDPOverhead + fwd.enc.PacketOverhead() + fwd.enc.FrameOverhead() + EthernetOverhead
+}
+
+func (fwd *Forwarder) verifyEffectivePMTU(newUnverifiedPMTU int) {
+	fwd.unverifiedPMTU = newUnverifiedPMTU
+	fwd.pmtuVerifyCount = PMTUVerifyAttempts
+	fwd.attemptVerifyEffectivePMTU()
+}
+
+func (fwd *Forwarder) attemptVerifyEffectivePMTU() {
+	pmtuVerifyFrame := &ForwardedFrame{
+		srcPeer: fwd.conn.local,
+		dstPeer: fwd.conn.remote,
+		frame:   make([]byte, fwd.unverifiedPMTU+EthernetOverhead)}
+	fwd.enc.AppendFrame(pmtuVerifyFrame)
+	fwd.flush()
+	if fwd.verifyPMTUTick == nil {
+		fwd.verifyPMTUTick = time.After(PMTUVerifyTimeout << (PMTUVerifyAttempts - fwd.pmtuVerifyCount))
+	}
+}
+
+func (fwd *Forwarder) appendFrame(frame *ForwardedFrame) bool {
+	frameLen := len(frame.frame)
+	if fwd.enc.TotalLen()+fwd.enc.FrameOverhead()+frameLen > fwd.maxPayload {
+		return false
+	}
+	fwd.enc.AppendFrame(frame)
+	return true
+}
+
+func (fwd *Forwarder) flush() {
+	err := fwd.udpSender.Send(fwd.enc.Bytes())
+	if err != nil {
+		if mtbe, ok := err.(MsgTooBigError); ok {
+			newUnverifiedPMTU := mtbe.PMTU - fwd.effectiveOverhead()
+			if newUnverifiedPMTU >= fwd.unverifiedPMTU {
+				return
+			}
+			fwd.pmtuVerified = false
+			fwd.maxPayload = mtbe.PMTU - UDPOverhead
+			fwd.highestGoodPMTU = 8
+			fwd.lowestBadPMTU = newUnverifiedPMTU + 1
+			fwd.conn.setEffectivePMTU(newUnverifiedPMTU)
+			fwd.verifyEffectivePMTU(newUnverifiedPMTU)
+		} else if PosixError(err) == syscall.ENOBUFS {
+			// TODO handle this better
+		} else {
+			fwd.conn.CheckFatal(err)
+		}
+	}
+}
+
+func (fwd *Forwarder) drain() {
+	// We want to drain before exiting otherwise we could get the
+	// packet sniffer or udp listener blocked on sending to a full
+	// chan
+	for {
+		select {
+		case <-fwd.ch:
+		default:
+			return
+		}
+	}
+}
+
+func (fwd *Forwarder) logDrop(frame *ForwardedFrame) {
+	fwd.conn.log("Dropping too big frame during forwarding: frame len:", len(frame.frame), "; effective PMTU:", fwd.maxPayload+UDPOverhead-fwd.effectiveOverhead())
 }
 
 // UDP Senders
@@ -312,26 +382,22 @@ func (sender *RawUDPSender) Send(msg []byte) error {
 	}
 	packet := sender.ipBuf.Bytes()
 	_, err = sender.socket.Write(packet)
-	if err != nil {
-		if PosixError(err) == syscall.EMSGSIZE {
-			f, err := sender.socket.File()
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			fd := int(f.Fd())
-			log.Println("EMSGSIZE on send, expecting PMTU update (IP packet was",
-				len(packet), "bytes, payload was", len(msg), "bytes)")
-			pmtu, err := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MTU)
-			if err != nil {
-				return err
-			}
-			return FrameTooBigError{PMTU: pmtu}
-		} else {
-			return err
-		}
+	if err == nil || PosixError(err) != syscall.EMSGSIZE {
+		return err
 	}
-	return nil
+	f, err := sender.socket.File()
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fd := int(f.Fd())
+	log.Println("EMSGSIZE on send, expecting PMTU update (IP packet was",
+		len(packet), "bytes, payload was", len(msg), "bytes)")
+	pmtu, err := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MTU)
+	if err != nil {
+		return err
+	}
+	return MsgTooBigError{PMTU: pmtu}
 }
 
 func (sender *RawUDPSender) Shutdown() error {

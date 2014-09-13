@@ -65,14 +65,14 @@ type LocalConnection struct {
 	remoteUDPAddr *net.UDPAddr
 	established   bool
 	stackFrag     bool
-	clientPMTU    int
-	pmtuVerified  bool
+	effectivePMTU int
 	SessionKey    *[32]byte
 	heartbeatStop chan<- interface{}
 	forwardChan   chan<- *ForwardedFrame
 	forwardChanDF chan<- *ForwardedFrame
 	stopForward   chan<- interface{}
 	stopForwardDF chan<- interface{}
+	verifyPMTU    chan<- int
 	Decryptor     Decryptor
 	Router        *Router
 	UID           uint64
@@ -83,6 +83,22 @@ type LocalConnection struct {
 type ConnectionInteraction struct {
 	Interaction
 	payload interface{}
+}
+
+type Forwarder struct {
+	conn            *LocalConnection
+	ch              <-chan *ForwardedFrame
+	stop            <-chan interface{}
+	verifyPMTUTick  <-chan time.Time
+	verifyPMTU      <-chan int
+	pmtuVerifyCount uint
+	enc             Encryptor
+	udpSender       UDPSender
+	maxPayload      int
+	pmtuVerified    bool
+	highestGoodPMTU int
+	unverifiedPMTU  int
+	lowestBadPMTU   int
 }
 
 type UDPPacket struct {
@@ -98,9 +114,12 @@ type EthernetDecoder struct {
 	parser  *gopacket.DecodingLayerParser
 }
 
+type MsgTooBigError struct {
+	PMTU int // actual pmtu, i.e. what the kernel told us
+}
+
 type FrameTooBigError struct {
-	PMTU  int
-	frame *ForwardedFrame
+	EPMTU int // effective pmtu, i.e. what we tell packet senders
 }
 
 type UnknownPeersError struct {
@@ -272,6 +291,8 @@ type NaClDecryptorInstance struct {
 	highestOffsetSeen   uint16
 	nonceChan           chan *[24]byte
 }
+
+// Packet capture/inject interfaces
 
 type PacketSource interface {
 	ReadPacket() ([]byte, error)

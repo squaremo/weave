@@ -1,14 +1,16 @@
 package main
 
 import (
-	"github.com/zettio/weave"
 	"code.google.com/p/gopacket/layers"
 	"crypto/sha256"
 	"flag"
 	"fmt"
 	"github.com/davecheney/profile"
+	"github.com/zettio/weave"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -46,7 +48,13 @@ func main() {
 	log.SetPrefix(weave.Protocol + " ")
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	procs := runtime.NumCPU()
+	// packet sniffing can block an OS thread, so we need one thread
+	// for that plus at least one more.
+	if procs < 2 {
+		procs = 2
+	}
+	runtime.GOMAXPROCS(procs)
 
 	var (
 		ifaceName  string
@@ -123,7 +131,19 @@ func main() {
 			}
 		}()
 	}
+	go handleHttp(router)
 	handleSignals(router)
+}
+
+func handleHttp(router *weave.Router) {
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, router.Status())
+	})
+	address := fmt.Sprintf(":%d", weave.StatusPort)
+	err := http.ListenAndServe(address, nil)
+	if err != nil {
+		log.Fatal("Unable to create http listener: ", err)
+	}
 }
 
 func handleSignals(router *weave.Router) {

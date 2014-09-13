@@ -15,10 +15,16 @@ import (
 const macMaxAge = 10 * time.Minute
 
 func NewRouter(iface *net.Interface, name PeerName, password []byte, connLimit int, bufSz int, logFrame func(string, []byte, *layers.Ethernet)) *Router {
+	onMacExpiry := func(mac net.HardwareAddr, peer *Peer) {
+		log.Println("Expired MAC", mac, "at", peer.Name)
+	}
+	onPeerGC := func(peer *Peer) {
+		log.Println("Removing unreachable", peer)
+	}
 	router := &Router{
 		Iface:     iface,
-		Macs:      NewMacCache(macMaxAge),
-		Peers:     NewPeerCache(),
+		Macs:      NewMacCache(macMaxAge, onMacExpiry),
+		Peers:     NewPeerCache(onPeerGC),
 		ConnLimit: connLimit,
 		BufSz:     bufSz,
 		LogFrame:  logFrame}
@@ -70,7 +76,8 @@ func (router *Router) sniff(pio PacketSourceSink) {
 	log.Println("Sniffing traffic on", router.Iface)
 
 	dec := NewEthernetDecoder()
-	checkFrameTooBig := dec.CheckFrameTooBigFunc(pio)
+	injectFrame := func(frame []byte) error { return pio.WritePacket(frame) }
+	checkFrameTooBig := func(err error) error { return dec.CheckFrameTooBig(err, injectFrame) }
 	mac := router.Iface.HardwareAddr
 	if router.Macs.Enter(mac, router.Ourself) {
 		log.Println("Discovered our MAC", mac)
@@ -207,7 +214,15 @@ func (router *Router) udpReader(conn *net.UDPConn, po PacketSink) {
 }
 
 func (router *Router) handleUDPPacketFunc(dec *EthernetDecoder, po PacketSink) FrameConsumer {
-	checkFrameTooBig := dec.CheckFrameTooBigFunc(po)
+	checkFrameTooBig := func(err error, srcPeer *Peer) error {
+		if err == nil { // optimisation: avoid closure creation in common case
+			return nil
+		}
+		return dec.CheckFrameTooBig(err,
+			func(icmpFrame []byte) error {
+				return router.Ourself.Forward(srcPeer, false, icmpFrame, nil)
+			})
+	}
 
 	return func(relayConn *LocalConnection, sender *net.UDPAddr, srcNameByte, dstNameByte []byte, frameLen uint16, frame []byte) error {
 		srcName := PeerNameFromBin(srcNameByte)
@@ -234,7 +249,12 @@ func (router *Router) handleUDPPacketFunc(dec *EthernetDecoder, po PacketSink) F
 			if router.Macs.Enter(srcMac, srcPeer) {
 				log.Println("Discovered remote MAC", srcMac, "at", srcPeer.Name)
 			}
-			return checkFrameTooBig(router.Ourself.Relay(srcPeer, dstPeer, df, frame, dec))
+			if df {
+				router.LogFrame("Relaying DF", frame, &dec.eth)
+			} else {
+				router.LogFrame("Relaying", frame, &dec.eth)
+			}
+			return checkFrameTooBig(router.Ourself.Relay(srcPeer, dstPeer, df, frame, dec), srcPeer)
 		}
 
 		if relayConn.Remote().Name == srcPeer.Name {
@@ -265,11 +285,12 @@ func (router *Router) handleUDPPacketFunc(dec *EthernetDecoder, po PacketSink) F
 		}
 		router.LogFrame("Injecting", frame, &dec.eth)
 		checkWarn(po.WritePacket(frame))
+
 		dstPeer, found = router.Macs.Lookup(dec.eth.DstMAC)
 		if !found || dec.BroadcastFrame() || dstPeer != router.Ourself {
-			df := decodedLen == 2 && (dec.ip.Flags&layers.IPv4DontFragment != 0)
-			checkFrameTooBig(router.Ourself.RelayBroadcast(srcPeer, df, frame, dec))
+			return checkFrameTooBig(router.Ourself.RelayBroadcast(srcPeer, df, frame, dec), srcPeer)
 		}
+
 		return nil
 	}
 }
