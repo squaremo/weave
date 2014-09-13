@@ -152,7 +152,7 @@ case "$COMMAND" in
         ${SCRIPT_DIR}/docker-ns $CONTAINER ip link add dev $TAP_BRIDGE type bridge
         ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $TAP_BRIDGE up
         ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $CONTAINER_IFNAME master $TAP_BRIDGE
-        ${SCRIPT_DIR}/docker-ns $CONTAINER ip tuntap add dev $TAP_IFNAME mode tap one_queue
+        ${SCRIPT_DIR}/docker-ns $CONTAINER ip tuntap add dev $TAP_IFNAME mode tap
         ${SCRIPT_DIR}/docker-ns $CONTAINER ip link set dev $TAP_IFNAME mtu $MTU master $TAP_BRIDGE promisc on up
         echo $CONTAINER
         ;;

@@ -45,7 +45,7 @@ func newTap(ifName string) (*os.File, error) {
 		return nil, err
 	}
 	var req ifReq
-	req.Flags = C.IFF_TAP | C.IFF_ONE_QUEUE | C.IFF_NO_PI
+	req.Flags = C.IFF_TAP | C.IFF_NO_PI
 	copy(req.Name[:C.IFNAMSIZ], ifName)
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, file.Fd(), uintptr(syscall.TUNSETIFF), uintptr(unsafe.Pointer(&req)))
 	if errno != 0 {
