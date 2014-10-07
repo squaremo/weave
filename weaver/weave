@@ -154,6 +154,16 @@ with_container_netns () {
     return $STATUS
 }
 
+tell_dns() {
+    CONTAINER="$1"
+    WEAVE_ADDR="$2"
+    DNS_IP=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' weavedns)
+    DNS_HTTP=http://$DNS_IP:6785/add
+    CONTAINER_IP=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' $CONTAINER)
+    CONTAINER_NAME=$(docker inspect --format '{{ .Config.Hostname }}.{{ .Config.Domainname }}' $CONTAINER)
+    curl -s -X POST -F "weave_cidr=$WEAVE_ADDR" -F "ip=$CONTAINER_IP" -F "name=$CONTAINER_NAME" $DNS_HTTP
+}
+
 # Attach Container-ID $1 to the weave network at CIDR address $2,
 # creating a virtual ethernet device if necessary.
 # Also turn off tx offload on device $3 inside the namespace.
@@ -196,10 +206,11 @@ attach() {
     if ip netns exec $NETNS ip route show | grep '^224\.0\.0\.0/4' >/dev/null ; then
         # There's a multicast route already present, leave it alone.
         return 0
+    else
+        # Route multicast packets across the weave network.
+        ip netns exec $NETNS ip route add 224.0.0.0/4 dev $CONTAINER_IFNAME
     fi
-
-    # Route multicast packets across the weave network.
-    ip netns exec $NETNS ip route add 224.0.0.0/4 dev $CONTAINER_IFNAME
+    tell_dns $1 $2
 }
 
 # Detach Container-ID $1 at CIDR address $2 from the weave network
@@ -257,6 +268,8 @@ case "$COMMAND" in
         MACADDR=`cat /sys/class/net/$BRIDGE/address`
         CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS zettio/weave -name $MACADDR "$@")
         with_container_netns attach $CONTAINER $IPADDR eth0
+        DNS_CONTAINER=$(docker run --privileged -d --name=weavedns -p 6785:6785/tcp zettio/weavedns)
+        with_container_netns attach $DNS_CONTAINER "10.0.0.2/16" $CONTAINER_IFNAME
         echo $CONTAINER
         ;;
     status)
@@ -292,7 +305,9 @@ case "$COMMAND" in
         IPADDR=$1
         shift 1
         create_bridge
-        CONTAINER=$(docker run -d "$@")
+        DNS_IP=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' weavedns)
+        CONTAINER=$(docker run --dns $DNS_IP -d "$@")
+        echo "docker run --dns $DNS_IP -d $@"
         with_container_netns attach $CONTAINER $IPADDR $CONTAINER_IFNAME
         echo $CONTAINER
         ;;
