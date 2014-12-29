@@ -1,3 +1,7 @@
+== Release 0.0.5-testrel
+
+Another test of latest_release
+
 == Release 0.0.4-testrel
 
 Test of latest_release
