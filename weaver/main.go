@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/davecheney/profile"
-	weavenet "github.com/zettio/weave/net"
+	. "github.com/zettio/weave/common"
 	weave "github.com/zettio/weave/router"
 	"io"
 	"log"
@@ -78,7 +78,7 @@ func main() {
 		fmt.Println("Missing required parameter 'iface'")
 		os.Exit(1)
 	}
-	iface, err := weavenet.EnsureInterface(ifaceName, wait)
+	iface, err := EnsureInterface(ifaceName, wait)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	. "github.com/zettio/weave/common"
 	weavedns "github.com/zettio/weave/nameserver"
-	weavenet "github.com/zettio/weave/net"
 	"io"
 	"net"
 	"os"
@@ -55,7 +54,7 @@ func main() {
 	if ifaceName != "" {
 		var err error
 		Info.Println("Waiting for interface", ifaceName, "to come up")
-		iface, err = weavenet.EnsureInterface(ifaceName, wait)
+		iface, err = EnsureInterface(ifaceName, wait)
 		if err != nil {
 			Error.Fatal(err)
 		} else {
