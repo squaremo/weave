@@ -1,3 +1,7 @@
+## Release 0.8.1-test-rel
+
+- Test releasing with the make publish reinstatement
+
 ## Release 0.8.0
 
 - Align script and image version. When the `weave` script has a
