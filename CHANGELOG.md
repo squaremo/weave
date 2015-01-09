@@ -1,3 +1,9 @@
+## Release 0.8.1-test
+
+- Do some stuff
+
+- And other stuff.
+
 ## Release 0.8.0
 
 - Align script and image version. When the `weave` script has a
