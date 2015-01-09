@@ -1,3 +1,7 @@
+## Release 0.8.2-test
+
+- I hope this works
+
 ## Release 0.8.1-test
 
 - Do some stuff
