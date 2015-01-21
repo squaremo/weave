@@ -6,15 +6,16 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 )
 
 const (
-	listenOn = ":12375"
+	RAW_STREAM = "application/vnd.docker.raw-stream"
 )
 
 type Proxy struct {
-	Transport http.RoundTripper
+	Dial func() (net.Conn, error)
 }
 
 func targetNetwork(u *url.URL) string {
@@ -37,21 +38,24 @@ func makeProxy(targetUrl string) (*Proxy, error) {
 		return nil, err
 	}
 	return &Proxy{
-		Transport: &http.Transport{
-			Proxy: func(_ *http.Request) (*url.URL, error) { return nil, nil },
-			Dial: func(_network, _address string) (net.Conn, error) {
-				return net.Dial(targetNetwork(u), targetAddress(u))
-			},
+		Dial: func() (net.Conn, error) {
+			return net.Dial(targetNetwork(u), targetAddress(u))
 		},
 	}, nil
 }
 
 func main() {
 	var target, listen string
+	var debug bool
 
 	flag.StringVar(&target, "H", "unix:///var/run/docker.sock", "docker daemon URL to proxy")
 	flag.StringVar(&listen, "L", ":12375", "address on which to listen")
+	flag.BoolVar(&debug, "debug", false, "log debugging information")
 	flag.Parse()
+
+	if debug {
+		InitDefaultLogging(true)
+	}
 
 	p, err := makeProxy(target)
 	s := &http.Server{
@@ -71,16 +75,26 @@ func main() {
 func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	Info.Printf("%s %s", r.Method, r.URL)
 	// These just to fool the HTTP code into doing my bidding
-	r.RequestURI = ""
-	r.URL.Scheme = "http"
-	r.URL.Host = "localhost"
-
-	resp, err := proxy.Transport.RoundTrip(r)
+	req, err := http.NewRequest(r.Method, r.URL.Path, r.Body)
 	if err != nil {
-		Warning.Printf("Failed to proxy %s %s: %s", r.Method, r.URL.Path, err)
-		w.WriteHeader(500)
+		http.Error(w, "Unable to create proxied request", http.StatusInternalServerError)
+		Warning.Print(err)
 		return
 	}
+	req.Close = false
+	req.Header = r.Header
+	req.URL.RawQuery = r.URL.RawQuery
+
+	conn, err := proxy.Dial()
+	if err != nil {
+		http.Error(w, "Could not connect to target", http.StatusInternalServerError)
+		Warning.Print(err)
+		return
+	}
+	client := httputil.NewClientConn(conn, nil)
+	defer client.Close()
+
+	resp, _ := client.Do(req)
 
 	hdr := w.Header()
 	for k, vs := range resp.Header {
@@ -89,9 +103,50 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
+	Debug.Printf("Response from target: %s %+v", resp.Status, w.Header())
 
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		Warning.Print(err)
+	if resp.Header.Get("Content-Type") == RAW_STREAM ||
+		(resp.TransferEncoding != nil &&
+			resp.TransferEncoding[0] == "chunked") {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "Unable to use raw stream mode", http.StatusInternalServerError)
+			return
+		}
+
+		down, _, err := hj.Hijack()
+		if err != nil {
+			http.Error(w, "Unable to switch to raw stream mode", http.StatusInternalServerError)
+			return
+		}
+		defer down.Close()
+
+		up, _ := client.Hijack()
+		defer up.Close()
+
+		end := make(chan bool)
+
+		go func() {
+			defer close(end)
+			_, err := io.Copy(down, up)
+			if err != nil {
+				Warning.Print(err)
+			}
+		}()
+		go func() {
+			_, err := io.Copy(up, down)
+			if err != nil {
+				Warning.Print(err)
+			}
+			up.(interface {
+				CloseWrite() error
+			}).CloseWrite()
+		}()
+		<-end
+	} else {
+		_, err = io.Copy(w, resp.Body)
+		if err != nil {
+			Warning.Print(err)
+		}
 	}
 }
