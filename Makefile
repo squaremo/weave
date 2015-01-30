@@ -11,6 +11,7 @@ WEAVE_VERSION=git-$(shell git rev-parse --short=12 HEAD)
 WEAVER_EXE=weaver/weaver
 WEAVEDNS_EXE=weavedns/weavedns
 SIGPROXY_EXE=sigproxy/sigproxy
+PROXY_EXE=proxy/proxy
 WEAVER_IMAGE=$(DOCKERHUB_USER)/weave
 WEAVEDNS_IMAGE=$(DOCKERHUB_USER)/weavedns
 WEAVEEXEC_IMAGE=$(DOCKERHUB_USER)/weaveexec
@@ -29,7 +30,7 @@ travis: $(WEAVER_EXE) $(WEAVEDNS_EXE)
 update:
 	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE))
 
-$(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
+$(WEAVER_EXE) $(WEAVEDNS_EXE) $(PROXY_EXE): common/*.go
 	go get -tags netgo ./$(@D)
 	go build -ldflags "-extldflags \"-static\" -X main.version $(WEAVE_VERSION)" -tags netgo -o $@ ./$(@D)
 	@strings $@ | grep cgo_stub\\\.go >/dev/null || { \
@@ -43,6 +44,7 @@ $(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
 
 $(WEAVER_EXE): router/*.go weaver/main.go
 $(WEAVEDNS_EXE): nameserver/*.go weavedns/main.go
+$(PROXY_EXE): proxy/main.go
 
 # Sigproxy needs separate rule as it fails the netgo check in the main
 # build stanza due to not importing net package
@@ -57,10 +59,11 @@ $(WEAVEDNS_EXPORT): weavedns/Dockerfile $(WEAVEDNS_EXE)
 	$(SUDO) docker build -t $(WEAVEDNS_IMAGE) weavedns
 	$(SUDO) docker save $(WEAVEDNS_IMAGE):latest > $@
 
-$(WEAVEEXEC_EXPORT): weaveexec/Dockerfile $(DOCKER_DISTRIB) weave $(SIGPROXY_EXE)
+$(WEAVEEXEC_EXPORT): weaveexec/Dockerfile $(DOCKER_DISTRIB) weave $(SIGPROXY_EXE) $(PROXY_EXE)
 	cp weave weaveexec/weave
 	cp sigproxy/sigproxy weaveexec/sigproxy
 	cp $(DOCKER_DISTRIB) weaveexec/docker.tgz
+	cp $(PROXY_EXE) weaveexec/
 	$(SUDO) docker build -t $(WEAVEEXEC_IMAGE) weaveexec
 	$(SUDO) docker save $(WEAVEEXEC_IMAGE):latest > $@
 
