@@ -1,4 +1,4 @@
 #!/bin/sh
 set -e
 
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/bin/docker -e PROCFS=/hostproc -v /proc:/hostproc --privileged --net=host squaremo/weavetools "$@"
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -e PROCFS=/hostproc -v /proc:/hostproc --privileged --net=host zettio/weavetools "$@"
