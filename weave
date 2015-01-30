@@ -1,4 +1,29 @@
 #!/bin/sh
 set -e
 
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -e PROCFS=/hostproc -v /proc:/hostproc --privileged --net=host zettio/weavetools "$@"
+case $DOCKER_HOST in
+    tcp://*)
+        PROXY_HOST=$(echo $DOCKER_HOST | sed -e 's|\(tcp://[0-9.]*\):[0-9]*|\1:12375|')
+        ;;
+    *)
+        PROXY_HOST="tcp://localhost:12375"
+        ;;
+esac
+
+case $1 in
+    "launch")
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -e PROCFS=/hostproc -v /proc:/hostproc --privileged --net=host \
+            zettio/weavetools "$@"
+        ;;
+    "run")
+        CIDR=$2
+        shift 2
+        docker -H "$PROXY_HOST" run -e "WEAVE_CIDR=$CIDR" $@
+        ;;
+    *)
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -e PROCFS=/hostproc -v /proc:/hostproc --privileged --net=host \
+            zettio/weavetools "$@"
+        ;;
+esac
