@@ -11,7 +11,7 @@ WEAVE_VERSION=git-$(shell git rev-parse --short=12 HEAD)
 WEAVER_EXE=weaver/weaver
 WEAVEDNS_EXE=weavedns/weavedns
 SIGPROXY_EXE=sigproxy/sigproxy
-PROXY_EXE=proxy/proxy
+PROXY_EXE=weaveexec/proxy
 WEAVER_IMAGE=$(DOCKERHUB_USER)/weave
 WEAVEDNS_IMAGE=$(DOCKERHUB_USER)/weavedns
 WEAVEEXEC_IMAGE=$(DOCKERHUB_USER)/weaveexec
@@ -28,7 +28,7 @@ all: $(WEAVER_EXPORT) $(WEAVEDNS_EXPORT) $(WEAVEEXEC_EXPORT)
 travis: $(WEAVER_EXE) $(WEAVEDNS_EXE)
 
 update:
-	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE))
+	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE)) ./$(dir $(PROXY_EXE))
 
 $(WEAVER_EXE) $(WEAVEDNS_EXE) $(PROXY_EXE): common/*.go
 	go get -tags netgo ./$(@D)
@@ -44,7 +44,7 @@ $(WEAVER_EXE) $(WEAVEDNS_EXE) $(PROXY_EXE): common/*.go
 
 $(WEAVER_EXE): router/*.go weaver/main.go
 $(WEAVEDNS_EXE): nameserver/*.go weavedns/main.go
-$(PROXY_EXE): proxy/main.go
+$(PROXY_EXE): proxy/*.go weaveexec/main.go
 
 # Sigproxy needs separate rule as it fails the netgo check in the main
 # build stanza due to not importing net package
