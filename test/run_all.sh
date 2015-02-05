@@ -2,15 +2,15 @@
 
 . ./config.sh
 
-whitely echo Sanity checks
+boldly echo Sanity checks
 if ! bash ./sanity_check.sh; then
-    whitely echo ...failed
+    boldly echo ...failed
     exit 1
 fi
-whitely echo ...ok
+boldly echo ...ok
 
 for t in *_test.sh; do
     echo
-    greyly echo "---= Running $t =---"
+    timidly echo "---= Running $t =---"
     . $t
 done

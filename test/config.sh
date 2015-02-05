@@ -27,34 +27,34 @@ remote() {
     $@ > >(while read line; do echo -e "\e[0;34m$rem>\e[0m $line"; done)
 }
 
-whitely() {
-    echo -e '\e[1;37m'`$@`'\e[0m'
+boldly() {
+    echo -e '\e[1m'`$@`'\e[0m'
 }
 
-greyly () {
-    echo -e '\e[0;37m'`$@`'\e[0m'
+timidly () {
+    echo -e '\e[0;36m'`$@`'\e[0m'
 }
 
 run_on() {
     host=$1
     shift 1
-    greyly echo "Running on $host: $@"
+    timidly echo "Running on $host: $@"
     remote $host $SSH $host $@
 }
 
 docker_on() {
     host=$1
     shift 1
-    greyly echo "Docker on $host: $@"
+    timidly echo "Docker on $host: $@"
     docker -H tcp://$host:2375 $@
 }
 
 start_suite() {
-    whitely echo $@
+    boldly echo $@
 }
 
 end_suite() {
-    whitely assert_end
+    boldly assert_end
 }
 
 WEAVE=./bin/weave
