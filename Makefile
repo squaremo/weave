@@ -45,7 +45,8 @@ $(WEAVEDNS_EXPORT): weavedns/Dockerfile $(WEAVEDNS_EXE)
 	$(SUDO) docker build -t $(WEAVEDNS_IMAGE) weavedns
 	$(SUDO) docker save $(WEAVEDNS_IMAGE):latest > $@
 
-$(WEAVETOOLS_EXPORT): tools/Dockerfile tools/driver
+$(WEAVETOOLS_EXPORT): tools/Dockerfile weave
+	cp weave tools/weave
 	$(SUDO) docker build -t $(WEAVETOOLS_IMAGE) tools
 	$(SUDO) docker save $(WEAVETOOLS_IMAGE):latest > $@
 
