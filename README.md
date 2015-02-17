@@ -34,6 +34,9 @@ Ensure you are running Linux (kernel 3.5 or later) and have Docker
       https://github.com/zettio/weave/releases/download/latest_release/weave
     sudo chmod a+x /usr/local/bin/weave
 
+Weave respects the environment variable `DOCKER_HOST`, so you can run
+it locally to control a weave network on a remote host.
+
 ## Quick Start Screencast
 
 <a href="http://youtu.be/k6r7yuSr0hE" alt="Click to watch the screencast" target="_blank">
