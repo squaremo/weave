@@ -10,6 +10,7 @@ DOCKERHUB_USER=zettio
 WEAVE_VERSION=git-$(shell git rev-parse --short=12 HEAD)
 WEAVER_EXE=weaver/weaver
 WEAVEDNS_EXE=weavedns/weavedns
+PROXY_EXE=proxy/proxy
 WEAVER_IMAGE=$(DOCKERHUB_USER)/weave
 WEAVEDNS_IMAGE=$(DOCKERHUB_USER)/weavedns
 WEAVETOOLS_IMAGE=$(DOCKERHUB_USER)/weavetools
@@ -22,7 +23,7 @@ all: $(WEAVER_EXPORT) $(WEAVEDNS_EXPORT) $(WEAVETOOLS_EXPORT)
 update:
 	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE))
 
-$(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
+$(WEAVER_EXE) $(WEAVEDNS_EXE) $(PROXY_EXE): common/*.go
 	go get -tags netgo ./$(@D)
 	go build -ldflags "-extldflags \"-static\" -X main.version $(WEAVE_VERSION)" -tags netgo -o $@ ./$(shell dirname $@)
 	@strings $@ | grep cgo_stub\\\.go >/dev/null || { \
@@ -36,6 +37,7 @@ $(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
 
 $(WEAVER_EXE): router/*.go weaver/main.go
 $(WEAVEDNS_EXE): nameserver/*.go weavedns/main.go
+$(PROXY_EXE): proxy/main.go
 
 $(WEAVER_EXPORT): weaver/Dockerfile $(WEAVER_EXE)
 	$(SUDO) docker build -t $(WEAVER_IMAGE) weaver
@@ -45,8 +47,9 @@ $(WEAVEDNS_EXPORT): weavedns/Dockerfile $(WEAVEDNS_EXE)
 	$(SUDO) docker build -t $(WEAVEDNS_IMAGE) weavedns
 	$(SUDO) docker save $(WEAVEDNS_IMAGE):latest > $@
 
-$(WEAVETOOLS_EXPORT): tools/Dockerfile weave
+$(WEAVETOOLS_EXPORT): tools/Dockerfile weave $(PROXY_EXE)
 	cp weave tools/weave
+	cp $(PROXY_EXE) tools/proxy
 	$(SUDO) docker build -t $(WEAVETOOLS_IMAGE) tools
 	$(SUDO) docker save $(WEAVETOOLS_IMAGE):latest > $@
 

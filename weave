@@ -15,15 +15,16 @@ IMAGE_VERSION=${VERSION:-$IMAGE_VERSION}
 usage() {
     echo "Usage:"
     echo "weave setup"
-    echo "weave launch     [-password <password>] <peer> ..."
-    echo "weave launch-dns <cidr>"
-    echo "weave connect    <peer>"
-    echo "weave run        [--with-dns] <cidr> <docker run args> ..."
-    echo "weave start      <cidr> <container_id>"
-    echo "weave attach     <cidr> <container_id>"
-    echo "weave detach     <cidr> <container_id>"
-    echo "weave expose     <cidr>"
-    echo "weave hide       <cidr>"
+    echo "weave launch       [-password <password>] <peer> ..."
+    echo "weave launch-dns   <cidr>"
+    echo "weave launch-proxy <port>"
+    echo "weave connect      <peer>"
+    echo "weave run          [--with-dns] <cidr> <docker run args> ..."
+    echo "weave start        <cidr> <container_id>"
+    echo "weave attach       <cidr> <container_id>"
+    echo "weave detach       <cidr> <container_id>"
+    echo "weave expose       <cidr>"
+    echo "weave hide         <cidr>"
     echo "weave ps"
     echo "weave status"
     echo "weave version"
@@ -32,6 +33,7 @@ usage() {
     echo "weave reset"
     echo
     echo "where <peer> is of the form <ip_address_or_fqdn>[:<port>], and"
+    echo "      <port> is a port on the host, and"
     echo "      <cidr> is of the form <ip_address>/<routing_prefix_length>"
     exit 1
 }
@@ -76,6 +78,7 @@ fi
 
 CONTAINER_NAME=weave
 DNS_CONTAINER_NAME=weavedns
+PROXY_CONTAINER_NAME=weaveproxy
 BRIDGE=weave
 CONTAINER_IFNAME=ethwe
 MTU=65535
@@ -516,6 +519,17 @@ case "$COMMAND" in
         with_container_netns $DNS_CONTAINER attach $CIDR >/dev/null
         populate_dns
         echo $DNS_CONTAINER
+        ;;
+    launch-proxy)
+        [ $# -eq 1 ] || usage
+        PORT=$1
+        shift 1
+        check_not_running $PROXY_CONTAINER_NAME $BASE_TOOLS_IMAGE
+        PROXY_CONTAINER=$(docker run --privileged -d --name=$PROXY_CONTAINER_NAME \
+            -p $PORT:12375/tcp -v /var/run/docker.sock:/var/run/docker.sock \
+            --entrypoint="./proxy" \
+            $TOOLS_IMAGE)
+        echo $PROXY_CONTAINER
         ;;
     connect)
         [ $# -eq 1 ] || usage
