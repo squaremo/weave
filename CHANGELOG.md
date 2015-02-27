@@ -1,3 +1,7 @@
+## Release 0.9.2
+
+Dummy release.
+
 ## Release 0.9.0
 
 - Improve WeaveDNS to the point where it can act as the name server
