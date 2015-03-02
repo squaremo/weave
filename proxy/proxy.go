@@ -90,14 +90,15 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer down.Close()
 
-		up, _ := client.Hijack()
+		up, rem := client.Hijack()
 		defer up.Close()
 
 		end := make(chan bool)
 
 		go func() {
 			defer close(end)
-			_, err := io.Copy(down, up)
+			_, err := io.Copy(down, rem)
+			_, err = io.Copy(down, up)
 			if err != nil {
 				Warning.Print(err)
 			}
