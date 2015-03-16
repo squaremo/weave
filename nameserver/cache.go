@@ -2,8 +2,8 @@ package nameserver
 
 import (
 	"errors"
-	. "github.com/zettio/weave/common"
 	"github.com/miekg/dns"
+	. "github.com/zettio/weave/common"
 	"math"
 	"math/rand"
 	"sort"
@@ -73,14 +73,14 @@ func newCacheEntry(question *dns.Question, reply *dns.Msg, status entryStatus, n
 		e.validUntil = now.Add(time.Duration(defPendingTimeout) * time.Second)
 		e.waitChan = make(chan struct{})
 	} else {
-		e.setReply(reply, 0, now)
+		e.setMessage(reply, 0, now)
 	}
 
 	return e
 }
 
 // Get a copy of the reply stored in the entry, but with some values adjusted like the TTL
-func (e *cacheEntry) getReply(request *dns.Msg, maxLen int, now time.Time) (*dns.Msg, error) {
+func (e *cacheEntry) getMessage(request *dns.Msg, maxLen int, now time.Time) (*dns.Msg, error) {
 	if e.Status != stResolved {
 		return nil, nil
 	}
@@ -125,7 +125,7 @@ func (e cacheEntry) hasExpired(now time.Time) bool {
 }
 
 // set the reply for the entry
-func (e *cacheEntry) setReply(reply *dns.Msg, flags uint8, now time.Time) {
+func (e *cacheEntry) setMessage(reply *dns.Msg, flags uint8, now time.Time) {
 	shouldNotify := (e.Status == stPending)
 
 	// calculate the validUntil from the reply TTL
@@ -151,13 +151,13 @@ func (e *cacheEntry) setReply(reply *dns.Msg, flags uint8, now time.Time) {
 // wait until a valid reply is set in the cache
 func (e *cacheEntry) waitReply(request *dns.Msg, timeout time.Duration, maxLen int, now time.Time) (*dns.Msg, error) {
 	if e.Status == stResolved {
-		return e.getReply(request, maxLen, now)
+		return e.getMessage(request, maxLen, now)
 	}
 
 	if timeout > 0 {
 		select {
 		case <-e.waitChan:
-			return e.getReply(request, maxLen, now)
+			return e.getMessage(request, maxLen, now)
 		case <-time.After(time.Second * timeout):
 			return nil, errTimeout
 		}
@@ -230,7 +230,7 @@ func (c *Cache) Put(request *dns.Msg, reply *dns.Msg, flags uint8, now time.Time
 	ent, found := c.entries[key]
 	if found {
 		Debug.Printf("[cache msgid %d] replacing response in cache", request.MsgHdr.Id)
-		ent.setReply(reply, flags, now)
+		ent.setMessage(reply, flags, now)
 	} else {
 		// If we will add a new item and the capacity has been exceeded, make some room...
 		if len(c.entries) >= c.Capacity {
@@ -252,7 +252,7 @@ func (c *Cache) Get(request *dns.Msg, maxLen int, now time.Time) (reply *dns.Msg
 	question := request.Question[0]
 	key := cacheKey(question)
 	if ent, found := c.entries[key]; found {
-		reply, err = ent.getReply(request, maxLen, now)
+		reply, err = ent.getMessage(request, maxLen, now)
 		if ent.hasExpired(now) {
 			Debug.Printf("[cache msgid %d] expired: removing", request.MsgHdr.Id)
 			delete(c.entries, key)
