@@ -15,11 +15,19 @@ const (
 	testRDNSsuccess  = "1.2.2.10.in-addr.arpa."
 	testRDNSfail     = "4.3.2.1.in-addr.arpa."
 	testRDNSnonlocal = "8.8.8.8.in-addr.arpa."
-	testPort         = 17625
 	testUdpBufSize   = 16384
 )
 
+var (
+	testPort = 17625
+)
+
+func setup_() {
+	testPort++
+}
+
 func TestUDPDNSServer(t *testing.T) {
+	setup_()
 	const (
 		successTestName = "test1.weave.local."
 		failTestName    = "test2.weave.local."
@@ -102,6 +110,7 @@ func TestUDPDNSServer(t *testing.T) {
 }
 
 func TestTCPDNSServer(t *testing.T) {
+	setup_()
 	const (
 		numAnswers   = 512
 		nonLocalName = "weave.works."
@@ -215,7 +224,7 @@ func assertExchange(t *testing.T, z string, ty uint16, minAnswers int, maxAnswer
 	m := new(dns.Msg)
 	m.RecursionDesired = true
 	m.SetQuestion(z, ty)
-	m.SetEdns0(testUdpBufSize, false)		// we don't want to play with truncation here...
+	m.SetEdns0(testUdpBufSize, false) // we don't want to play with truncation here...
 
 	r, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", port))
 	t.Logf("Response:\n%+v\n", r)
