@@ -105,6 +105,12 @@ otherwise be able to change the contents of `/etc/resolv.conf`.
 Potentially this could be done as an API extension rather than a
 driver extension.
 
+### WeaveDNS initialisation
+
+Each WeaveDNS peer needs an IP address on the weave network;
+potentially we could reserve a special subnet for the peers, but they
+still need to be allocated an address on it.
+
 ## Considerations for swarm
 
 The docker swarm ideal is that individual hosts can be driven by the
