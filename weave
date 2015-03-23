@@ -17,6 +17,7 @@ usage() {
     echo "weave setup"
     echo "weave launch     [-password <password>] [-nickname <nickname>] <peer> ..."
     echo "weave launch-dns <cidr>"
+    echo "weave launch-proxy"
     echo "weave connect    <peer>"
     echo "weave forget     <peer>"
     echo "weave run        [--with-dns] <cidr> [<cidr> ...] <docker run args> ..."
@@ -123,21 +124,21 @@ ensure_proxy_running() {
     docker run --privileged --net=host -d \
         --name=$PROXY_CONTAINER_NAME \
         -p $PROXY_PORT:12375/tcp -v /var/run/docker.sock:/var/run/docker.sock \
-        -v $PROCFS:/hostproc -e PROCFS=/hostproc \
-        --entrypoint=/home/weave/proxy $EXEC_IMAGE >/dev/null
+        -v /proc:/hostproc -e PROCFS=/hostproc \
+        --entrypoint=/home/weave/proxy $EXEC_IMAGE "$@"
 }
 
 exec_remote() {
     docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
-        -v "$PROCFS":/hostproc \
+        -v /proc:/hostproc -e PROCFS=/hostproc \
         -e VERSION \
         -e WEAVE_DOCKER_ARGS \
         -e WEAVEDNS_DOCKER_ARGS \
         -e WEAVE_PASSWORD \
         -e WEAVE_CONTAINER_NAME \
         -e DOCKER_BRIDGE \
-        -e PROCFS=/hostproc --privileged --net=host \
+        --privileged --net=host \
         $EXEC_IMAGE --local "$@"
 }
 
@@ -709,6 +710,9 @@ case "$COMMAND" in
         populate_dns
         echo $DNS_CONTAINER
         ;;
+    launch-proxy)
+        ensure_proxy_running "$@"
+        ;;
     connect)
         [ $# -eq 1 ] || usage
         http_call $CONTAINER_NAME $HTTP_PORT POST /connect -d "peer=$1"
@@ -824,11 +828,13 @@ case "$COMMAND" in
         ;;
     reset)
         [ $# -eq 0 ] || usage
-        docker stop  $CONTAINER_NAME     >/dev/null 2>&1 || true
-        docker stop  $DNS_CONTAINER_NAME >/dev/null 2>&1 || true
-        docker rm -f $CONTAINER_NAME     >/dev/null 2>&1 || true
-        docker rm -f $DNS_CONTAINER_NAME >/dev/null 2>&1 || true
-        conntrack -D -p udp --dport $PORT >/dev/null 2>&1 || true
+        docker stop  $CONTAINER_NAME       >/dev/null 2>&1 || true
+        docker stop  $DNS_CONTAINER_NAME   >/dev/null 2>&1 || true
+        docker stop  $PROXY_CONTAINER_NAME >/dev/null 2>&1 || true
+        docker rm -f $CONTAINER_NAME       >/dev/null 2>&1 || true
+        docker rm -f $DNS_CONTAINER_NAME   >/dev/null 2>&1 || true
+        docker rm -f $PROXY_CONTAINER_NAME >/dev/null 2>&1 || true
+        conntrack -D -p udp --dport $PORT  >/dev/null 2>&1 || true
         destroy_bridge
         for LOCAL_IFNAME in $(ip link show | grep v${CONTAINER_IFNAME}pl | cut -d ' ' -f 2 | tr -d ':') ; do
             ip link del $LOCAL_IFNAME
