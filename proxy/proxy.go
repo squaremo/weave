@@ -51,7 +51,6 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Warning.Print(err)
 		return
 	}
-	req.Close = false
 
 	conn, err := proxy.Dial()
 	if err != nil {
@@ -71,12 +70,10 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hdr.Add(k, v)
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
-	Debug.Printf("Response from target: %s %+v", resp.Status, w.Header())
+	Debug.Printf("Response from target: %s %v", resp.Status, w.Header())
 
-	if resp.Header.Get("Content-Type") == RAW_STREAM ||
-		(resp.TransferEncoding != nil &&
-			resp.TransferEncoding[0] == "chunked") {
+	if resp.Header.Get("Content-Type") == RAW_STREAM {
+		w.WriteHeader(resp.StatusCode)
 		hj, ok := w.(http.Hijacker)
 		if !ok {
 			http.Error(w, "Unable to use raw stream mode", http.StatusInternalServerError)
@@ -113,7 +110,38 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}).CloseWrite()
 		}()
 		<-end
+
+	} else if resp.TransferEncoding != nil &&
+		resp.TransferEncoding[0] == "chunked" {
+		// Because we can't go back to request/response after we
+		// hijack the connection, we need to close it and make the
+		// client open another.
+		hdr.Add("Connection", "close")
+		w.WriteHeader(resp.StatusCode)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "Unable to hijack response stream for chunked response", http.StatusInternalServerError)
+			return
+		}
+		down, _, err := hj.Hijack()
+		if err != nil {
+			http.Error(w, "Unable to hijack response stream for chunked response", http.StatusInternalServerError)
+			return
+		}
+		defer down.Close()
+
+		up, rem := client.Hijack()
+		defer up.Close()
+
+		chunkreader := httputil.NewChunkedReader(io.MultiReader(rem, up))
+		chunkwriter := httputil.NewChunkedWriter(down)
+		io.Copy(chunkwriter, chunkreader)
+		chunkwriter.Close()
+		resp.Trailer.Write(down)
+		// a chunked response ends with a CRLF
+		down.Write([]byte{13, 10})
 	} else {
+		w.WriteHeader(resp.StatusCode)
 		_, err = io.Copy(w, resp.Body)
 		if err != nil {
 			Warning.Print(err)
