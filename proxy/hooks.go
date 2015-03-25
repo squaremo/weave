@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	. "github.com/zettio/weave/common"
 	"io/ioutil"
@@ -11,7 +10,7 @@ import (
 	"strings"
 )
 
-func containerInfo(proxy *Proxy, containerId string) (body map[string]interface{}, err error) {
+func containerInfo(proxy *proxy, containerId string) (body map[string]interface{}, err error) {
 	body = nil
 	client := &http.Client{
 		Transport: proxy,
@@ -68,46 +67,24 @@ func weaveAddrFromConfig(config map[string]interface{}) string {
 	return ""
 }
 
-func (proxy *Proxy) InterceptRequest(r *http.Request) (*http.Request, error) {
-	body := r.Body
-	if isCreate(r) {
-		var config map[string]interface{}
-		bs, _ := ioutil.ReadAll(body)
-		body = ioutil.NopCloser(bytes.NewReader(bs))
-		if err := json.Unmarshal(bs, &config); err == nil {
-			if cidr := weaveAddrFromConfig(config); cidr != "" {
-				Info.Printf("Creating container with CIDR %s", cidr)
-			}
-		} else {
-			Warning.Print("Unable to decode CREATE body: ", err)
-		}
-	}
-	req, err := http.NewRequest(r.Method, r.URL.Path, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = r.Header
-	req.URL.RawQuery = r.URL.RawQuery
-	return req, nil
+func (proxy *proxy) InterceptRequest(r *http.Request) (*http.Request, error) {
+	return r, nil
 }
 
-func (proxy *Proxy) InterceptResponse(req *http.Request, res *http.Response) *http.Response {
+func (proxy *proxy) InterceptResponse(req *http.Request, res *http.Response) *http.Response {
 	if isStart(req) {
-		if containerId := containerFromPath(req.URL.Path); containerId != "" {
-			if info, err := containerInfo(proxy, containerId); err == nil {
-				Debug.Print(info)
-				if cidr := weaveAddrFromConfig(info["Config"].(map[string]interface{})); cidr != "" {
-					if out, err := callWeave("attach", cidr, containerId); err != nil {
-						Warning.Print("Calling weave failed:", err, string(out))
-					}
-				} else {
-					Debug.Print("No Weave CIDR, ignoring")
+		containerId := containerFromPath(req.URL.Path)
+		if info, err := containerInfo(proxy, containerId); err == nil {
+			if cidr := weaveAddrFromConfig(info["Config"].(map[string]interface{})); cidr != "" {
+				Info.Printf("Container %s was started with CIDR %s", containerId, cidr)
+				if out, err := callWeave("attach", cidr, containerId); err != nil {
+					Warning.Print("Calling weave failed:", err, string(out))
 				}
 			} else {
-				Warning.Print("Unable to fetch container info: ", err)
+				Debug.Print("No Weave CIDR, ignoring")
 			}
 		} else {
-			Error.Fatal("Cound not extract container ID from path")
+			Warning.Print("Cound not parse container config from request", err)
 		}
 	}
 	return res
