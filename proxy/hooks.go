@@ -49,7 +49,7 @@ func callWeave(args ...string) ([]byte, error) {
 	args = append([]string{"--local"}, args...)
 	Debug.Print("Calling weave", args)
 	cmd := exec.Command("./weave", args...)
-	cmd.Env = []string{"PROCFS=/hostproc", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	cmd.Env = []string{"PROCFS=/hostproc", "PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	out, err := cmd.CombinedOutput()
 	return out, err
 }

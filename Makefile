@@ -63,7 +63,6 @@ $(WEAVEEXEC_EXPORT): weaveexec/Dockerfile $(DOCKER_DISTRIB) weave $(SIGPROXY_EXE
 	cp weave weaveexec/weave
 	cp sigproxy/sigproxy weaveexec/sigproxy
 	cp $(DOCKER_DISTRIB) weaveexec/docker.tgz
-	cp $(PROXY_EXE) weaveexec/
 	$(SUDO) docker build -t $(WEAVEEXEC_IMAGE) weaveexec
 	$(SUDO) docker save $(WEAVEEXEC_IMAGE):latest > $@
 
