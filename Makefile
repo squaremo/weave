@@ -1,4 +1,4 @@
-PUBLISH=publish_weave publish_weavedns publish_weaveexec
+PUBLISH=publish_weave publish_weavedns publish_weaveexec publish_plugin
 
 .DEFAULT: all
 .PHONY: all update tests publish $(PUBLISH) clean prerequisites build travis
@@ -11,25 +11,28 @@ WEAVE_VERSION=git-$(shell git rev-parse --short=12 HEAD)
 WEAVER_EXE=weaver/weaver
 WEAVEDNS_EXE=weavedns/weavedns
 SIGPROXY_EXE=sigproxy/sigproxy
+PLUGIN_EXE=plugin/plugin
 WEAVER_IMAGE=$(DOCKERHUB_USER)/weave
 WEAVEDNS_IMAGE=$(DOCKERHUB_USER)/weavedns
 WEAVEEXEC_IMAGE=$(DOCKERHUB_USER)/weaveexec
+PLUGIN_IMAGE=$(DOCKERHUB_USER)/plugin
 WEAVER_EXPORT=weave.tar
 WEAVEDNS_EXPORT=weavedns.tar
 WEAVEEXEC_EXPORT=weaveexec.tar
+PLUGIN_EXPORT=plugin.tar
 
 WEAVEEXEC_DOCKER_VERSION=1.3.1
 DOCKER_DISTRIB=weaveexec/docker-$(WEAVEEXEC_DOCKER_VERSION).tgz
 DOCKER_DISTRIB_URL=https://get.docker.com/builds/Linux/x86_64/docker-$(WEAVEEXEC_DOCKER_VERSION).tgz
 
-all: $(WEAVER_EXPORT) $(WEAVEDNS_EXPORT) $(WEAVEEXEC_EXPORT)
+all: $(WEAVER_EXPORT) $(WEAVEDNS_EXPORT) $(WEAVEEXEC_EXPORT) $(PLUGIN_EXPORT)
 
-travis: $(WEAVER_EXE) $(WEAVEDNS_EXE)
+travis: $(WEAVER_EXE) $(WEAVEDNS_EXE) $(PLUGIN_EXE)
 
 update:
-	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE))
+	go get -u -f -v -tags -netgo ./$(dir $(WEAVER_EXE)) ./$(dir $(WEAVEDNS_EXE)) ./$(dir $(PLUGIN_EXE))
 
-$(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
+$(WEAVER_EXE) $(WEAVEDNS_EXE) $(PLUGIN_EXE): common/*.go
 	go get -tags netgo ./$(@D)
 	go build -ldflags "-extldflags \"-static\" -X main.version $(WEAVE_VERSION)" -tags netgo -o $@ ./$(@D)
 	@strings $@ | grep cgo_stub\\\.go >/dev/null || { \
@@ -43,6 +46,7 @@ $(WEAVER_EXE) $(WEAVEDNS_EXE): common/*.go
 
 $(WEAVER_EXE): router/*.go weaver/main.go
 $(WEAVEDNS_EXE): nameserver/*.go weavedns/main.go
+$(PLUGIN_EXE): plugin/main.go
 
 # Sigproxy needs separate rule as it fails the netgo check in the main
 # build stanza due to not importing net package
@@ -63,6 +67,10 @@ $(WEAVEEXEC_EXPORT): weaveexec/Dockerfile $(DOCKER_DISTRIB) weave $(SIGPROXY_EXE
 	cp $(DOCKER_DISTRIB) weaveexec/docker.tgz
 	$(SUDO) docker build -t $(WEAVEEXEC_IMAGE) weaveexec
 	$(SUDO) docker save $(WEAVEEXEC_IMAGE):latest > $@
+
+$(PLUGIN_EXPORT): plugin/Dockerfile $(PLUGIN_EXE)
+	$(SUDO) docker build -t $(PLUGIN_IMAGE) plugin
+	$(SUDO) docker save $(PLUGIN_IMAGE):latest > $@
 
 $(DOCKER_DISTRIB):
 	curl -o $(DOCKER_DISTRIB) $(DOCKER_DISTRIB_URL)
