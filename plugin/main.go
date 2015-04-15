@@ -43,6 +43,7 @@ func main() {
 	InitDefaultLogging(debug)
 
 	router := mux.NewRouter()
+	router.NotFoundHandler = http.HandlerFunc(notFound)
 
 	router.Methods("GET").Path("/status").HandlerFunc(status)
 	router.Methods("POST").Path("/v1/handshake").HandlerFunc(handshake)
@@ -59,9 +60,13 @@ func main() {
 	}
 }
 
+func notFound(w http.ResponseWriter, r *http.Request) {
+	Warning.Printf("[plugin] Request for path %s", r.URL.Path)
+}
+
 func handshake(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(&handshakeResp{
-		[]string{"network"},
+		[]string{"net"},
 		"weave",
 		"help@weave.works",
 		"WeaveWorks",
