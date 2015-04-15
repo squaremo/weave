@@ -1,5 +1,3 @@
-FROM scratch
-MAINTAINER Weaveworks Inc <help@weave.works>
-WORKDIR /home/weave
+FROM zettio/weaveexec
 ADD ./plugin /home/weave/
 ENTRYPOINT ["/home/weave/plugin"]

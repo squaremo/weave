@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 )
 
 var version = "(unreleased version)"
@@ -21,6 +22,18 @@ type handshakeResp struct {
 	Org          string
 	Website      string
 }
+
+type networkInfo struct {
+	Name   string
+	ID     string
+	Driver string
+	Labels map[string]string
+}
+
+var (
+	subnet *net.IPNet
+	peers  []string
+)
 
 func main() {
 	var (
@@ -41,6 +54,8 @@ func main() {
 	}
 
 	InitDefaultLogging(debug)
+
+	peers = flag.Args()
 
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
@@ -92,8 +107,27 @@ func status(w http.ResponseWriter, r *http.Request) {
 }
 
 func createNetwork(w http.ResponseWriter, r *http.Request) {
+	var info networkInfo
+	err := json.NewDecoder(r.Body).Decode(&info)
+	if err != nil {
+		http.Error(w, "Cannot parse JSON", http.StatusBadRequest)
+		return
+	}
+	sub, exists := info.Labels["subnet"]
+	if !exists {
+		sub = "10.2.0.0/16"
+	}
+	_, subnet, err = net.ParseCIDR(sub)
+	if err != nil {
+		http.Error(w, "Invalid subnet CIDR", http.StatusBadRequest)
+		return
+	}
+	if err = launchWeave(); err != nil {
+		http.Error(w, "Problem launching Weave: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	Info.Printf("Create network")
-	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+	w.Write([]byte{})
 }
 
 func destroyNetwork(w http.ResponseWriter, r *http.Request) {
@@ -109,4 +143,18 @@ func plugEndpoint(w http.ResponseWriter, r *http.Request) {
 func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
 	Info.Printf("Unplug endpoint")
 	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+}
+
+// ===
+
+func launchWeave() error {
+	args := []string{"launch"}
+	args = append(args, peers...)
+	cmd := exec.Command("./weave", args...)
+	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		Warning.Print(string(out))
+	}
+	return err
 }
