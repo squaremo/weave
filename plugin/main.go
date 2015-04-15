@@ -44,9 +44,15 @@ func main() {
 
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
-
 	router.Methods("GET").Path("/status").HandlerFunc(status)
+
 	router.Methods("POST").Path("/v1/handshake").HandlerFunc(handshake)
+
+	router.Methods("POST").Path("/v1/net/").HandlerFunc(createNetwork)
+	router.Methods("DELETE").Path("/v1/net/{networkID}").HandlerFunc(destroyNetwork)
+
+	router.Methods("POST").Path("/v1/net/{networkID}/").HandlerFunc(plugEndpoint)
+	router.Methods("DELETE").Path("/v1/net/{networkID}/{endpointID}").HandlerFunc(unplugEndpoint)
 
 	var listener net.Listener
 
@@ -61,7 +67,8 @@ func main() {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	Warning.Printf("[plugin] Request for path %s", r.URL.Path)
+	Warning.Printf("[plugin] Not found: %s", r.URL.Path)
+	http.NotFound(w, r)
 }
 
 func handshake(w http.ResponseWriter, r *http.Request) {
@@ -82,4 +89,24 @@ func handshake(w http.ResponseWriter, r *http.Request) {
 
 func status(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, fmt.Sprintln("weave plugin", version))
+}
+
+func createNetwork(w http.ResponseWriter, r *http.Request) {
+	Info.Printf("Create network")
+	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+}
+
+func destroyNetwork(w http.ResponseWriter, r *http.Request) {
+	Info.Printf("Destroy network")
+	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+}
+
+func plugEndpoint(w http.ResponseWriter, r *http.Request) {
+	Info.Printf("Plug endpoint")
+	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+}
+
+func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
+	Info.Printf("Unplug endpoint")
+	http.Error(w, "Unimplemented", http.StatusNotImplemented)
 }
