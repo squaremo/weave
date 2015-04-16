@@ -65,30 +65,18 @@ func TestElection(t *testing.T) {
 		peerNameString = "02:00:00:02:00:00"
 	)
 
-	baseTime := time.Date(2014, 9, 7, 12, 0, 0, 0, time.UTC)
-
 	alloc1 := testAllocator(t, ourNameString, testStart1+"/22")
 	defer alloc1.Stop()
-	mockTime := new(mockTimeProvider)
-	mockTime.SetTime(baseTime)
-	alloc1.setTimeProvider(mockTime)
-
-	mockTime.SetTime(baseTime.Add(1 * time.Second))
 
 	// Simulate another peer on the gossip network
 	alloc2 := testAllocator(t, peerNameString, testStart1+"/22")
 	defer alloc2.Stop()
-	alloc2.setTimeProvider(mockTime)
-
-	mockTime.SetTime(baseTime.Add(2 * time.Second))
 
 	alloc1.OnGossipBroadcast(alloc2.EncodeState())
 	// At first, this peer has no space, so alloc1 should do nothing
 
-	mockTime.SetTime(baseTime.Add(3 * time.Second))
 	alloc1.tryPendingOps()
 
-	mockTime.SetTime(baseTime.Add(4 * time.Second))
 	SetLeader(alloc1, peerNameString)
 	// On receipt of the GetFor, alloc1 should elect alloc2 as leader
 	ExpectMessage(alloc1, peerNameString, msgLeaderElected, nil)
@@ -101,10 +89,6 @@ func TestElection(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	AssertNothingSent(t, done)
 
-	// Time out with no reply
-	mockTime.SetTime(baseTime.Add(15 * time.Second))
-	// fixme: not implemented yet
-	// ExpectMessage(alloc1, peerNameString, msgLeaderElected, nil)
 	alloc1.tryPendingOps()
 	AssertNothingSent(t, done)
 
@@ -243,20 +227,8 @@ func TestGossipShutdown(t *testing.T) {
 
 // Placeholders for test methods that touch the internals of Allocator
 
-func (alloc *Allocator) AssertNothingPending(t *testing.T) {
-	// dependent on internals that are yet to be implemented
-	//wt.AssertEqualInt(t, len(alloc1.inflight), 0, "inflight")
-	//wt.AssertEqualInt(t, len(alloc1.claims), 0, "claims")
-}
-
 func (alloc *Allocator) EncodeState() []byte {
 	return alloc.ring.GossipState()
-}
-
-func (alloc *Allocator) AmendSpace(newSize int) {
-	// tbd
-	//alloc.ourSpaceSet.spaces[0].(*MutableSpace).MinSpace.Size = newSize
-	//alloc.ourSpaceSet.version++
 }
 
 // Test we can create three nodes, create ips on two of them, remove those

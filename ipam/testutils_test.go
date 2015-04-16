@@ -19,19 +19,6 @@ func (alloc *Allocator) addSpace(startAddr string, length uint32) *Allocator {
 	return alloc
 }
 
-// To allow time itself to be stubbed out for testing
-type timeProvider interface {
-	Now() time.Time
-}
-
-type defaultTime struct{}
-
-func (defaultTime) Now() time.Time { return time.Now() }
-
-func (alloc *Allocator) setTimeProvider(tp timeProvider) {
-	// fixme
-}
-
 type mockMessage struct {
 	dst     router.PeerName
 	msgType byte
@@ -147,18 +134,6 @@ func CheckAllExpectedMessagesSent(allocs ...*Allocator) {
 		}
 	}
 }
-
-type mockTimeProvider struct {
-	myTime time.Time
-}
-
-type mockTimer struct {
-	when time.Time
-	f    func()
-}
-
-func (m *mockTimeProvider) SetTime(t time.Time) { m.myTime = t }
-func (m *mockTimeProvider) Now() time.Time      { return m.myTime }
 
 func testAllocator(t *testing.T, name string, universeCIDR string) *Allocator {
 	ourName, _ := router.PeerNameFromString(name)
