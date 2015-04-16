@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/gorilla/mux"
 	. "github.com/weaveworks/weave/common"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -28,11 +30,27 @@ type networkInfo struct {
 	ID     string
 	Driver string
 	Labels map[string]string
+	State  map[string]string
+}
+
+type endpointInfo struct {
+	ID      string
+	Network string
+	Labels  map[string]string
+}
+
+type netInterface struct {
+	Gateway     string `json:"gateway"`
+	IPAddress   string `json:"ip"`
+	IPPrefixLen uint   `json:"ip_prefix_len"`
+	MacAddress  string `json:"mac"`
+	Bridge      string `json:"bridge"`
 }
 
 var (
-	subnet *net.IPNet
-	peers  []string
+	network *networkInfo
+	subnet  *net.IPNet
+	peers   []string
 )
 
 func main() {
@@ -113,6 +131,9 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cannot parse JSON", http.StatusBadRequest)
 		return
 	}
+
+	network = &info
+
 	sub, exists := info.Labels["subnet"]
 	if !exists {
 		sub = "10.2.0.0/16"
@@ -122,7 +143,7 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid subnet CIDR", http.StatusBadRequest)
 		return
 	}
-	if err = launchWeave(); err != nil {
+	if err = doWeaveCmd(append([]string{"launch"}, peers...)); err != nil {
 		http.Error(w, "Problem launching Weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -131,25 +152,56 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 }
 
 func destroyNetwork(w http.ResponseWriter, r *http.Request) {
-	Info.Printf("Destroy network")
-	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+	routeVars := mux.Vars(r)
+	netID, _ := routeVars["networkID"]
+	if err := doWeaveCmd([]string{"stop"}); err != nil {
+		http.Error(w, "Unable to stop weave: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	Info.Printf("Destroy network %s", netID)
+	w.Write([]byte{})
 }
 
 func plugEndpoint(w http.ResponseWriter, r *http.Request) {
-	Info.Printf("Plug endpoint")
-	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+	var info endpointInfo
+	err := json.NewDecoder(r.Body).Decode(&info)
+	if err != nil {
+		http.Error(w, "Cannot parse JSON", http.StatusBadRequest)
+		return
+	}
+	routeVars := mux.Vars(r)
+	netID, _ := routeVars["networkID"]
+	if network == nil || netID != network.ID {
+		notFound(w, r)
+		return
+	}
+	ip := makeIP(subnet)
+	mac := makeMac(ip)
+	prefix, _ := subnet.Mask.Size()
+	resp := netInterface{
+		Gateway:     "",
+		IPAddress:   ip.String(),
+		IPPrefixLen: uint(prefix),
+		MacAddress:  mac,
+		Bridge:      "weave",
+	}
+	Debug.Printf("Plug: %+v", &resp)
+	if err = json.NewEncoder(w).Encode(&resp); err != nil {
+		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
+	}
+	Info.Printf("Plug endpoint %s %+v", info.ID, resp)
 }
 
 func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
-	Info.Printf("Unplug endpoint")
-	http.Error(w, "Unimplemented", http.StatusNotImplemented)
+	routeVars := mux.Vars(r)
+	endID := routeVars["endpointID"]
+	w.Write([]byte{})
+	Info.Printf("Unplug endpoint %s", endID)
 }
 
 // ===
 
-func launchWeave() error {
-	args := []string{"launch"}
-	args = append(args, peers...)
+func doWeaveCmd(args []string) error {
 	cmd := exec.Command("./weave", args...)
 	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin"}
 	out, err := cmd.CombinedOutput()
@@ -157,4 +209,20 @@ func launchWeave() error {
 		Warning.Print(string(out))
 	}
 	return err
+}
+
+func makeIP(sub *net.IPNet) net.IP {
+	var base uint = uint(sub.IP[3]) + uint(sub.IP[2])<<8 + uint(sub.IP[1])<<16 + uint(sub.IP[0])<<24
+	ones, bits := sub.Mask.Size()
+	add, _ := rand.Int(rand.Reader, big.NewInt((1<<uint(bits-ones))-2))
+	asInt := uint64(base) + add.Uint64()
+	return net.IPv4(byte(asInt>>24), byte(asInt>>16), byte(asInt>>8), byte(asInt))
+}
+
+func makeMac(ip net.IP) string {
+	hw := make(net.HardwareAddr, 6)
+	hw[0] = 0x7a
+	hw[1] = 0x42
+	copy(hw[2:], ip.To4())
+	return hw.String()
 }
