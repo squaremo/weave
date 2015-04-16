@@ -44,7 +44,7 @@ $(WEAVER_EXE) $(WEAVEDNS_EXE) $(PLUGIN_EXE): common/*.go
 		false; \
 	}
 
-$(WEAVER_EXE): router/*.go weaver/main.go
+$(WEAVER_EXE): router/*.go ipam/*.go ipam/*/*.go weaver/main.go
 $(WEAVEDNS_EXE): nameserver/*.go weavedns/main.go
 $(PLUGIN_EXE): plugin/main.go
 
