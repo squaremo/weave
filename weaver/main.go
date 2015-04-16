@@ -127,7 +127,7 @@ func main() {
 	}
 
 	config.BufSz = bufSzMB * 1024 * 1024
-	config.LogFrame = logFrameFunc(debug)
+	config.LogFrame = logFrameFunc(pktdebug)
 
 	router := weave.NewRouter(config, name, nickName)
 	log.Println("Our name is", router.Ourself.FullName())
