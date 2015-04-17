@@ -525,6 +525,10 @@ populate_ipam() {
     done
 }
 
+call_ipam() {
+    CIDR_ARGS="$(http_call $CONTAINER_NAME $HTTP_PORT GET /ip/$1)"
+}
+
 # If we don't already have any CIDRs passed from the command-line, get one from IPAM
 get_ipam_cidr() {
     if [ -z $CIDR_ARGS ] ; then
@@ -542,7 +546,7 @@ get_ipam_cidr() {
                 return 1
                 ;;
         esac
-        CIDR_ARGS="$(http_call $CONTAINER_NAME $HTTP_PORT GET /ip/$CONTAINER)"
+        call_ipam
         if [ "$CIDR_ARGS" = "404 page not found" ] ; then
             echo "At least one CIDR is required on the command-line if IPAM has not been configured." >&2
             return 1
@@ -805,6 +809,11 @@ case "$COMMAND" in
     dns-args)
         dns_args "$@"
         echo -n $DNS_ARGS
+        ;;
+    alloc)
+        [ $# -eq 1 ] || usage
+        call_ipam $1
+        echo -n $CIDR_ARGS
         ;;
     start)
         [ $# -gt 1 ] || usage

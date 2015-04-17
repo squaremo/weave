@@ -1,14 +1,12 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/gorilla/mux"
 	. "github.com/weaveworks/weave/common"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -143,7 +141,9 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid subnet CIDR", http.StatusBadRequest)
 		return
 	}
-	if err = doWeaveCmd(append([]string{"launch"}, peers...)); err != nil {
+
+	weaveArgs := []string{"launch", "-alloc", subnet.String()}
+	if _, err = doWeaveCmd(weaveArgs); err != nil {
 		http.Error(w, "Problem launching Weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -154,7 +154,7 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 func destroyNetwork(w http.ResponseWriter, r *http.Request) {
 	routeVars := mux.Vars(r)
 	netID, _ := routeVars["networkID"]
-	if err := doWeaveCmd([]string{"stop"}); err != nil {
+	if _, err := doWeaveCmd([]string{"stop"}); err != nil {
 		http.Error(w, "Unable to stop weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -175,7 +175,12 @@ func plugEndpoint(w http.ResponseWriter, r *http.Request) {
 		notFound(w, r)
 		return
 	}
-	ip := makeIP(subnet)
+	ip, err := getIP(&info)
+	if err != nil {
+		Warning.Printf("Error allocating IP:", err)
+		http.Error(w, "Unable to allocate IP", http.StatusInternalServerError)
+		return
+	}
 	mac := makeMac(ip)
 	prefix, _ := subnet.Mask.Size()
 	resp := netInterface{
@@ -201,22 +206,24 @@ func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
 
 // ===
 
-func doWeaveCmd(args []string) error {
+func doWeaveCmd(args []string) (string, error) {
 	cmd := exec.Command("./weave", args...)
 	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin"}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		Warning.Print(string(out))
 	}
-	return err
+	return string(out), err
 }
 
-func makeIP(sub *net.IPNet) net.IP {
-	var base uint = uint(sub.IP[3]) + uint(sub.IP[2])<<8 + uint(sub.IP[1])<<16 + uint(sub.IP[0])<<24
-	ones, bits := sub.Mask.Size()
-	add, _ := rand.Int(rand.Reader, big.NewInt((1<<uint(bits-ones))-2))
-	asInt := uint64(base) + add.Uint64()
-	return net.IPv4(byte(asInt>>24), byte(asInt>>16), byte(asInt>>8), byte(asInt))
+// assumed to be in the subnet
+func getIP(info *endpointInfo) (net.IP, error) {
+	res, err := doWeaveCmd([]string{"alloc", info.ID})
+	if err != nil {
+		return nil, err
+	}
+	ip, _, err := net.ParseCIDR(res)
+	return ip, err
 }
 
 func makeMac(ip net.IP) string {
