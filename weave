@@ -857,6 +857,11 @@ case "$COMMAND" in
         dns_args "$@"
         echo -n $DNS_ARGS
         ;;
+    alloc)
+        [ $# -eq 1 ] || usage
+        CIDR_ARGS=$(http_call $CONTAINER_NAME $HTTP_PORT POST /ip/$1)
+        echo -n $CIDR_ARGS
+        ;;
     start)
         collect_cidr_args "$@"
         shift $CIDR_COUNT
