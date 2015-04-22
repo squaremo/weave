@@ -23,30 +23,21 @@ type handshakeResp struct {
 	Website      string
 }
 
-type networkInfo struct {
-	Name   string
-	ID     string
-	Driver string
-	Labels map[string]string
-	State  map[string]string
+type iface struct {
+	SrcName    string
+	DstName    string
+	Address    string
+	MACAddress string
 }
 
-type endpointInfo struct {
-	ID      string
-	Network string
-	Labels  map[string]string
-}
-
-type netInterface struct {
-	Gateway     string `json:"gateway"`
-	IPAddress   string `json:"ip"`
-	IPPrefixLen uint   `json:"ip_prefix_len"`
-	MacAddress  string `json:"mac"`
-	Bridge      string `json:"bridge"`
+type sbInfo struct {
+	Interfaces  []*iface
+	Gateway     net.IP
+	GatewayIPv6 net.IP
 }
 
 var (
-	network *networkInfo
+	network string
 	subnet  *net.IPNet
 	peers   []string
 )
@@ -79,10 +70,10 @@ func main() {
 
 	router.Methods("POST").Path("/v1/handshake").HandlerFunc(handshake)
 
-	router.Methods("POST").Path("/v1/net/").HandlerFunc(createNetwork)
+	router.Methods("PUT").Path("/v1/net/{networkID}").HandlerFunc(createNetwork)
 	router.Methods("DELETE").Path("/v1/net/{networkID}").HandlerFunc(destroyNetwork)
 
-	router.Methods("POST").Path("/v1/net/{networkID}/").HandlerFunc(plugEndpoint)
+	router.Methods("PUT").Path("/v1/net/{networkID}/{endpointID}").HandlerFunc(plugEndpoint)
 	router.Methods("DELETE").Path("/v1/net/{networkID}/{endpointID}").HandlerFunc(unplugEndpoint)
 
 	var listener net.Listener
@@ -98,7 +89,7 @@ func main() {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	Warning.Printf("[plugin] Not found: %s", r.URL.Path)
+	Warning.Printf("[plugin] Not found: %+v", r)
 	http.NotFound(w, r)
 }
 
@@ -123,19 +114,12 @@ func status(w http.ResponseWriter, r *http.Request) {
 }
 
 func createNetwork(w http.ResponseWriter, r *http.Request) {
-	var info networkInfo
-	err := json.NewDecoder(r.Body).Decode(&info)
-	if err != nil {
-		http.Error(w, "Cannot parse JSON", http.StatusBadRequest)
-		return
-	}
+	routeVars := mux.Vars(r)
+	netID, _ := routeVars["networkID"]
+	network = netID
 
-	network = &info
-
-	sub, exists := info.Labels["subnet"]
-	if !exists {
-		sub = "10.2.0.0/16"
-	}
+	sub := "10.2.0.0/16"
+	var err error
 	_, subnet, err = net.ParseCIDR(sub)
 	if err != nil {
 		http.Error(w, "Invalid subnet CIDR", http.StatusBadRequest)
@@ -163,38 +147,65 @@ func destroyNetwork(w http.ResponseWriter, r *http.Request) {
 }
 
 func plugEndpoint(w http.ResponseWriter, r *http.Request) {
-	var info endpointInfo
-	err := json.NewDecoder(r.Body).Decode(&info)
-	if err != nil {
-		http.Error(w, "Cannot parse JSON", http.StatusBadRequest)
-		return
-	}
 	routeVars := mux.Vars(r)
 	netID, _ := routeVars["networkID"]
-	if network == nil || netID != network.ID {
+	endID, _ := routeVars["endpointID"]
+	if netID != network {
 		notFound(w, r)
 		return
 	}
-	ip, err := getIP(&info)
+	ip, err := getIP(endID)
 	if err != nil {
 		Warning.Printf("Error allocating IP:", err)
 		http.Error(w, "Unable to allocate IP", http.StatusInternalServerError)
 		return
 	}
-	mac := makeMac(ip)
 	prefix, _ := subnet.Mask.Size()
-	resp := netInterface{
-		Gateway:     "",
-		IPAddress:   ip.String(),
-		IPPrefixLen: uint(prefix),
-		MacAddress:  mac,
-		Bridge:      "weave",
+
+	// use the endpoint ID bytes to make veth names, and cross fingers
+	localName := "vethwel" + endID[:5]
+	guestName := "vethweg" + endID[:5]
+	mac := makeMac(ip)
+	// create and attach local name to the bridge
+	ipout, err := doIpCmd([]string{"link", "add", "name", localName, "type", "veth", "peer", "name", guestName})
+	if err != nil {
+		Warning.Print(ipout)
+		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		return
 	}
+	ipout, err = doIpCmd([]string{"link", "set", localName, "master", "weave"})
+	if err != nil {
+		Warning.Print(ipout)
+		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		return
+	}
+	ipout, err = doIpCmd([]string{"link", "set", localName, "up"})
+	if err != nil {
+		Warning.Print(ipout)
+		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		return
+	}
+
+	respIface := &iface{
+		SrcName: guestName,
+		DstName: "ethwe",
+		Address: (&net.IPNet{
+			ip,
+			net.CIDRMask(prefix, 32),
+		}).String(),
+		MACAddress: mac,
+	}
+	resp := &sbInfo{
+		Interfaces:  []*iface{respIface},
+		Gateway:     nil,
+		GatewayIPv6: nil,
+	}
+
 	Debug.Printf("Plug: %+v", &resp)
 	if err = json.NewEncoder(w).Encode(&resp); err != nil {
 		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
 	}
-	Info.Printf("Plug endpoint %s %+v", info.ID, resp)
+	Info.Printf("Plug endpoint %s %+v", endID, resp)
 }
 
 func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -216,9 +227,19 @@ func doWeaveCmd(args []string) (string, error) {
 	return string(out), err
 }
 
+func doIpCmd(args []string) (string, error) {
+	cmd := exec.Command("ip", args...)
+	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		Warning.Print(string(out))
+	}
+	return string(out), err
+}
+
 // assumed to be in the subnet
-func getIP(info *endpointInfo) (net.IP, error) {
-	res, err := doWeaveCmd([]string{"alloc", info.ID})
+func getIP(ID string) (net.IP, error) {
+	res, err := doWeaveCmd([]string{"alloc", ID})
 	if err != nil {
 		return nil, err
 	}
