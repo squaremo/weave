@@ -16,11 +16,7 @@ import (
 var version = "(unreleased version)"
 
 type handshakeResp struct {
-	InterestedIn []string
-	Name         string
-	Author       string
-	Org          string
-	Website      string
+	Implements []string
 }
 
 type iface struct {
@@ -68,13 +64,13 @@ func main() {
 	router.NotFoundHandler = http.HandlerFunc(notFound)
 	router.Methods("GET").Path("/status").HandlerFunc(status)
 
-	router.Methods("POST").Path("/v1/handshake").HandlerFunc(handshake)
+	router.Methods("POST").Path("/Plugin.Activate").HandlerFunc(handshake)
 
-	router.Methods("PUT").Path("/v1/net/{networkID}").HandlerFunc(createNetwork)
-	router.Methods("DELETE").Path("/v1/net/{networkID}").HandlerFunc(destroyNetwork)
+	router.Methods("POST").Path("/NetworkDriver.CreateNetwork").HandlerFunc(createNetwork)
+	router.Methods("POST").Path("/NetworkDriver.DeleteNetwork").HandlerFunc(deleteNetwork)
 
-	router.Methods("PUT").Path("/v1/net/{networkID}/{endpointID}").HandlerFunc(plugEndpoint)
-	router.Methods("DELETE").Path("/v1/net/{networkID}/{endpointID}").HandlerFunc(unplugEndpoint)
+	router.Methods("POST").Path("/NetworkDriver.CreateEndpoint").HandlerFunc(createEndpoint)
+	router.Methods("POST").Path("/NetworkDriver.DeleteEndpoint").HandlerFunc(deleteEndpoint)
 
 	var listener net.Listener
 
@@ -95,11 +91,7 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 
 func handshake(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(&handshakeResp{
-		[]string{"net"},
-		"weave",
-		"help@weave.works",
-		"WeaveWorks",
-		"http://weave.works/",
+		[]string{"NetworkDriver"},
 	})
 	if err != nil {
 		Error.Fatal("handshake encode:", err)
@@ -113,11 +105,12 @@ func status(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, fmt.Sprintln("weave plugin", version))
 }
 
-func createNetwork(w http.ResponseWriter, r *http.Request) {
-	routeVars := mux.Vars(r)
-	netID, _ := routeVars["networkID"]
-	network = netID
+type networkCreate struct {
+	Id      string
+	Options map[string]interface{}
+}
 
+func createNetwork(w http.ResponseWriter, r *http.Request) {
 	sub := "10.2.0.0/16"
 	var err error
 	_, subnet, err = net.ParseCIDR(sub)
@@ -126,30 +119,64 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var create networkCreate
+	err = json.NewDecoder(r.Body).Decode(&create)
+	if err != nil {
+		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Create network request %+v", &create)
+
+	network = create.Id
+
 	weaveArgs := []string{"launch", "-iprange", subnet.String()}
 	if _, err = doWeaveCmd(weaveArgs); err != nil {
 		http.Error(w, "Problem launching Weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	Info.Printf("Create network")
+	Info.Printf("Create network %s", network)
 	w.Write([]byte{})
 }
 
-func destroyNetwork(w http.ResponseWriter, r *http.Request) {
-	routeVars := mux.Vars(r)
-	netID, _ := routeVars["networkID"]
+type networkDelete struct {
+	NetworkId string
+}
+
+func deleteNetwork(w http.ResponseWriter, r *http.Request) {
+	var delete networkDelete
+	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
+		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if delete.NetworkId != network {
+		notFound(w, r)
+		return
+	}
 	if _, err := doWeaveCmd([]string{"stop"}); err != nil {
 		http.Error(w, "Unable to stop weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	Info.Printf("Destroy network %s", netID)
+	network = ""
+	Info.Printf("Destroy network %s", delete.NetworkId)
 	w.Write([]byte{})
 }
 
-func plugEndpoint(w http.ResponseWriter, r *http.Request) {
-	routeVars := mux.Vars(r)
-	netID, _ := routeVars["networkID"]
-	endID, _ := routeVars["endpointID"]
+type endpointCreate struct {
+	NetworkId  string
+	EndpointId string
+	Options    map[string]interface{}
+}
+
+func createEndpoint(w http.ResponseWriter, r *http.Request) {
+	var create endpointCreate
+	if err := json.NewDecoder(r.Body).Decode(&create); err != nil {
+		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Create endpoint request %+v", &create)
+	netID := create.NetworkId
+	endID := create.EndpointId
+
 	if netID != network {
 		notFound(w, r)
 		return
@@ -165,7 +192,6 @@ func plugEndpoint(w http.ResponseWriter, r *http.Request) {
 	// use the endpoint ID bytes to make veth names, and cross fingers
 	localName := "vethwel" + endID[:5]
 	guestName := "vethweg" + endID[:5]
-	mac := makeMac(ip)
 	// create and attach local name to the bridge
 	ipout, err := doIpCmd([]string{"link", "add", "name", localName, "type", "veth", "peer", "name", guestName})
 	if err != nil {
@@ -193,7 +219,6 @@ func plugEndpoint(w http.ResponseWriter, r *http.Request) {
 			ip,
 			net.CIDRMask(prefix, 32),
 		}).String(),
-		MACAddress: mac,
 	}
 	resp := &sbInfo{
 		Interfaces:  []*iface{respIface},
@@ -204,15 +229,67 @@ func plugEndpoint(w http.ResponseWriter, r *http.Request) {
 	Debug.Printf("Plug: %+v", &resp)
 	if err = json.NewEncoder(w).Encode(&resp); err != nil {
 		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
+		return
 	}
-	Info.Printf("Plug endpoint %s %+v", endID, resp)
+	Info.Printf("Create endpoint %s %+v", endID, resp)
 }
 
-func unplugEndpoint(w http.ResponseWriter, r *http.Request) {
-	routeVars := mux.Vars(r)
-	endID := routeVars["endpointID"]
+type endpointDelete struct {
+	NetworkId  string
+	EndpointId string
+}
+
+func deleteEndpoint(w http.ResponseWriter, r *http.Request) {
+	var delete endpointDelete
+	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
+		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	// TODO
 	w.Write([]byte{})
-	Info.Printf("Unplug endpoint %s", endID)
+	Info.Printf("Delete endpoint %s", delete.EndpointId)
+}
+
+type join struct {
+	NetworkId  string
+	EndpointId string
+	SandboxKey string
+	Options    map[string]interface{}
+}
+
+type joinResponse struct {
+	HostPath string
+}
+
+func joinEndpoint(w http.ResponseWriter, r *http.Request) {
+	var j join
+	if err := json.NewDecoder(r.Body).Decode(&j); err != nil {
+		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	// TODO
+	if err := json.NewEncoder(w).Encode(&joinResponse{""}); err != nil {
+		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
+		return
+	}
+	Info.Printf("Join endpoint %s:%s to %s", j.NetworkId, j.EndpointId, j.SandboxKey)
+}
+
+type leave struct {
+	NetworkId  string
+	EndpointId string
+	Options    map[string]interface{}
+}
+
+func leaveEndpoint(w http.ResponseWriter, r *http.Request) {
+	var l leave
+	if err := json.NewDecoder(r.Body).Decode(&l); err != nil {
+		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	// TODO
+	w.Write([]byte{})
+	Info.Printf("Delete endpoint %s:%s", l.NetworkId, l.EndpointId)
 }
 
 // ===
