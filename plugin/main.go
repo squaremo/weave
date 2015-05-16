@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -71,6 +72,10 @@ func main() {
 
 	router.Methods("POST").Path("/NetworkDriver.CreateEndpoint").HandlerFunc(createEndpoint)
 	router.Methods("POST").Path("/NetworkDriver.DeleteEndpoint").HandlerFunc(deleteEndpoint)
+	router.Methods("POST").Path("/NetworkDriver.EndpointInfo").HandlerFunc(infoEndpoint)
+
+	router.Methods("POST").Path("/NetworkDriver.Join").HandlerFunc(joinEndpoint)
+	router.Methods("POST").Path("/NetworkDriver.Leave").HandlerFunc(leaveEndpoint)
 
 	var listener net.Listener
 
@@ -79,7 +84,18 @@ func main() {
 		Error.Fatalf("[plugin] Unable to listen on %s: %s", address, err)
 	}
 
-	if err := http.Serve(listener, router); err != nil {
+	sub := "10.2.0.0/16"
+
+	_, subnet, err = net.ParseCIDR(sub)
+	if err != nil {
+		Error.Fatalf("Invalid subnet CIDR %s", sub)
+	}
+	weaveArgs := []string{"launch", "-iprange", subnet.String()}
+	if err = runWeaveCmd(weaveArgs); err != nil {
+		Error.Fatal("Problem launching Weave: " + err.Error())
+	}
+
+	if err = http.Serve(listener, router); err != nil {
 		Error.Fatalf("[plugin] Internal error: %s", err)
 	}
 }
@@ -89,13 +105,18 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+func sendError(w http.ResponseWriter, msg string, code int) {
+	Error.Printf("%d %s", code, msg)
+	http.Error(w, msg, code)
+}
+
 func handshake(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(&handshakeResp{
 		[]string{"NetworkDriver"},
 	})
 	if err != nil {
 		Error.Fatal("handshake encode:", err)
-		http.Error(w, "encode error", http.StatusInternalServerError)
+		sendError(w, "encode error", http.StatusInternalServerError)
 		return
 	}
 	Info.Printf("Handshake completed")
@@ -106,36 +127,28 @@ func status(w http.ResponseWriter, r *http.Request) {
 }
 
 type networkCreate struct {
-	Id      string
-	Options map[string]interface{}
+	NetworkId string
+	Options   map[string]interface{}
 }
 
-func createNetwork(w http.ResponseWriter, r *http.Request) {
-	sub := "10.2.0.0/16"
-	var err error
-	_, subnet, err = net.ParseCIDR(sub)
-	if err != nil {
-		http.Error(w, "Invalid subnet CIDR", http.StatusBadRequest)
-		return
-	}
+type networkCreateResponse struct{}
 
+func createNetwork(w http.ResponseWriter, r *http.Request) {
 	var create networkCreate
-	err = json.NewDecoder(r.Body).Decode(&create)
+	err := json.NewDecoder(r.Body).Decode(&create)
 	if err != nil {
-		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	Debug.Printf("Create network request %+v", &create)
 
-	network = create.Id
+	network = create.NetworkId
 
-	weaveArgs := []string{"launch", "-iprange", subnet.String()}
-	if _, err = doWeaveCmd(weaveArgs); err != nil {
-		http.Error(w, "Problem launching Weave: "+err.Error(), http.StatusInternalServerError)
+	if err := json.NewEncoder(w).Encode(&networkCreateResponse{}); err != nil {
+		sendError(w, "Could not encode JSON response: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	Info.Printf("Create network %s", network)
-	w.Write([]byte{})
 }
 
 type networkDelete struct {
@@ -145,15 +158,16 @@ type networkDelete struct {
 func deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var delete networkDelete
 	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
-		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	Debug.Printf("Delete network request: %+v", &delete)
 	if delete.NetworkId != network {
 		notFound(w, r)
 		return
 	}
-	if _, err := doWeaveCmd([]string{"stop"}); err != nil {
-		http.Error(w, "Unable to stop weave: "+err.Error(), http.StatusInternalServerError)
+	if _, err := getWeaveCmd([]string{"stop"}); err != nil {
+		sendError(w, "Unable to stop weave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	network = ""
@@ -170,7 +184,7 @@ type endpointCreate struct {
 func createEndpoint(w http.ResponseWriter, r *http.Request) {
 	var create endpointCreate
 	if err := json.NewDecoder(r.Body).Decode(&create); err != nil {
-		http.Error(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
+		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	Debug.Printf("Create endpoint request %+v", &create)
@@ -184,7 +198,7 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 	ip, err := getIP(endID)
 	if err != nil {
 		Warning.Printf("Error allocating IP:", err)
-		http.Error(w, "Unable to allocate IP", http.StatusInternalServerError)
+		sendError(w, "Unable to allocate IP", http.StatusInternalServerError)
 		return
 	}
 	prefix, _ := subnet.Mask.Size()
@@ -196,19 +210,19 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 	ipout, err := doIpCmd([]string{"link", "add", "name", localName, "type", "veth", "peer", "name", guestName})
 	if err != nil {
 		Warning.Print(ipout)
-		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		sendError(w, "Could not configure net device", http.StatusInternalServerError)
 		return
 	}
 	ipout, err = doIpCmd([]string{"link", "set", localName, "master", "weave"})
 	if err != nil {
 		Warning.Print(ipout)
-		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		sendError(w, "Could not configure net device", http.StatusInternalServerError)
 		return
 	}
 	ipout, err = doIpCmd([]string{"link", "set", localName, "up"})
 	if err != nil {
 		Warning.Print(ipout)
-		http.Error(w, "Could not configure net device", http.StatusInternalServerError)
+		sendError(w, "Could not configure net device", http.StatusInternalServerError)
 		return
 	}
 
@@ -228,7 +242,7 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	Debug.Printf("Plug: %+v", &resp)
 	if err = json.NewEncoder(w).Encode(&resp); err != nil {
-		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
+		sendError(w, "Could not JSON encode response", http.StatusInternalServerError)
 		return
 	}
 	Info.Printf("Create endpoint %s %+v", endID, resp)
@@ -242,12 +256,33 @@ type endpointDelete struct {
 func deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	var delete endpointDelete
 	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
-		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
 		return
 	}
+	Debug.Printf("Delete endpoint request: %+v", &delete)
 	// TODO
 	w.Write([]byte{})
 	Info.Printf("Delete endpoint %s", delete.EndpointId)
+}
+
+type endpointInfoReq struct {
+	NetworkId  string
+	EndpointId string
+}
+
+func infoEndpoint(w http.ResponseWriter, r *http.Request) {
+	var info endpointInfoReq
+	if err := json.NewDecoder(r.Body).Decode(&info); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Endpoint info request: %+v", &info)
+	var response map[string]interface{}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		sendError(w, "Error encoding JSON response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	Info.Printf("Endpoint info %s", info.EndpointId)
 }
 
 type join struct {
@@ -264,12 +299,13 @@ type joinResponse struct {
 func joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	var j join
 	if err := json.NewDecoder(r.Body).Decode(&j); err != nil {
-		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
 		return
 	}
+	Debug.Printf("Join request: %+v", &j)
 	// TODO
 	if err := json.NewEncoder(w).Encode(&joinResponse{""}); err != nil {
-		http.Error(w, "Could not JSON encode response", http.StatusInternalServerError)
+		sendError(w, "Could not JSON encode response", http.StatusInternalServerError)
 		return
 	}
 	Info.Printf("Join endpoint %s:%s to %s", j.NetworkId, j.EndpointId, j.SandboxKey)
@@ -281,27 +317,49 @@ type leave struct {
 	Options    map[string]interface{}
 }
 
+type leaveResponse struct{}
+
 func leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	var l leave
 	if err := json.NewDecoder(r.Body).Decode(&l); err != nil {
-		http.Error(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
 		return
 	}
 	// TODO
-	w.Write([]byte{})
-	Info.Printf("Delete endpoint %s:%s", l.NetworkId, l.EndpointId)
+	Debug.Printf("Leave request: %+v", &l)
+	if err := json.NewEncoder(w).Encode(&leaveResponse{}); err != nil {
+		sendError(w, "Error encoding JSON response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	Info.Printf("Leave %s:%s", l.NetworkId, l.EndpointId)
 }
 
 // ===
 
-func doWeaveCmd(args []string) (string, error) {
+func getWeaveCmd(args []string) (string, error) {
 	cmd := exec.Command("./weave", args...)
-	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin"}
-	out, err := cmd.CombinedOutput()
+	cmd.Env = []string{"PATH=/usr/bin:/usr/local/bin", "WEAVE_DEBUG=true"}
+	var buf bytes.Buffer
+	cmd.Stderr = &buf
+	out, err := cmd.Output()
 	if err != nil {
-		Warning.Print(string(out))
+		Warning.Print(buf.String())
 	}
 	return string(out), err
+}
+
+func runWeaveCmd(args []string) error {
+	cmd := exec.Command("./weave", append([]string{}, args...)...)
+	cmd.Env = []string{
+		"PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin",
+		"WEAVE_DEBUG=true"}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		Warning.Print(err.Error())
+	}
+	return err
 }
 
 func doIpCmd(args []string) (string, error) {
@@ -316,7 +374,7 @@ func doIpCmd(args []string) (string, error) {
 
 // assumed to be in the subnet
 func getIP(ID string) (net.IP, error) {
-	res, err := doWeaveCmd([]string{"alloc", ID})
+	res, err := getWeaveCmd([]string{"alloc", ID})
 	if err != nil {
 		return nil, err
 	}
