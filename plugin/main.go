@@ -36,7 +36,6 @@ type sbInfo struct {
 var (
 	network string
 	subnet  *net.IPNet
-	peers   []string
 )
 
 func main() {
@@ -59,7 +58,7 @@ func main() {
 
 	InitDefaultLogging(debug)
 
-	peers = flag.Args()
+	peers := flag.Args()
 
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
@@ -91,7 +90,7 @@ func main() {
 		Error.Fatalf("Invalid subnet CIDR %s", sub)
 	}
 	weaveArgs := []string{"launch", "-iprange", subnet.String()}
-	if err = runWeaveCmd(weaveArgs); err != nil {
+	if err = runWeaveCmd(append(weaveArgs, peers...)); err != nil {
 		Error.Fatal("Problem launching Weave: " + err.Error())
 	}
 
