@@ -20,17 +20,12 @@ type handshakeResp struct {
 	Implements []string
 }
 
-type iface struct {
-	SrcName    string
-	DstName    string
-	Address    string
-	MACAddress string
-}
-
-type sbInfo struct {
-	Interfaces  []*iface
-	Gateway     net.IP
-	GatewayIPv6 net.IP
+type joinInfo struct {
+	InterfaceNames []*iface
+	Gateway        string
+	GatewayIPv6    string
+	HostsPath      string
+	ResolvConfPath string
 }
 
 var (
@@ -71,7 +66,7 @@ func main() {
 
 	router.Methods("POST").Path("/NetworkDriver.CreateEndpoint").HandlerFunc(createEndpoint)
 	router.Methods("POST").Path("/NetworkDriver.DeleteEndpoint").HandlerFunc(deleteEndpoint)
-	router.Methods("POST").Path("/NetworkDriver.EndpointInfo").HandlerFunc(infoEndpoint)
+	router.Methods("POST").Path("/NetworkDriver.EndpointOperInfo").HandlerFunc(infoEndpoint)
 
 	router.Methods("POST").Path("/NetworkDriver.Join").HandlerFunc(joinEndpoint)
 	router.Methods("POST").Path("/NetworkDriver.Leave").HandlerFunc(leaveEndpoint)
@@ -109,6 +104,23 @@ func sendError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
 }
 
+func errorResponsef(w http.ResponseWriter, fmtString string, item ...interface{}) {
+	json.NewEncoder(w).Encode(map[string]string{
+		"Err": fmt.Sprintf(fmtString, item...),
+	})
+}
+
+func objectResponse(w http.ResponseWriter, obj interface{}) {
+	if err := json.NewEncoder(w).Encode(obj); err != nil {
+		sendError(w, "Could not JSON encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+func emptyResponse(w http.ResponseWriter) {
+	json.NewEncoder(w).Encode(map[string]string{})
+}
+
 func handshake(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(&handshakeResp{
 		[]string{"NetworkDriver"},
@@ -126,11 +138,9 @@ func status(w http.ResponseWriter, r *http.Request) {
 }
 
 type networkCreate struct {
-	NetworkId string
+	NetworkID string
 	Options   map[string]interface{}
 }
-
-type networkCreateResponse struct{}
 
 func createNetwork(w http.ResponseWriter, r *http.Request) {
 	var create networkCreate
@@ -141,17 +151,18 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	Debug.Printf("Create network request %+v", &create)
 
-	network = create.NetworkId
-
-	if err := json.NewEncoder(w).Encode(&networkCreateResponse{}); err != nil {
-		sendError(w, "Could not encode JSON response: "+err.Error(), http.StatusInternalServerError)
+	if network != "" {
+		errorResponsef(w, "You get just one network, and you already made %s", network)
 		return
 	}
+
+	network = create.NetworkID
+	emptyResponse(w)
 	Info.Printf("Create network %s", network)
 }
 
 type networkDelete struct {
-	NetworkId string
+	NetworkID string
 }
 
 func deleteNetwork(w http.ResponseWriter, r *http.Request) {
@@ -161,8 +172,8 @@ func deleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	Debug.Printf("Delete network request: %+v", &delete)
-	if delete.NetworkId != network {
-		notFound(w, r)
+	if delete.NetworkID != network {
+		errorResponsef(w, "Network %s not found", delete.NetworkID)
 		return
 	}
 	if _, err := getWeaveCmd([]string{"stop"}); err != nil {
@@ -170,14 +181,27 @@ func deleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	network = ""
-	Info.Printf("Destroy network %s", delete.NetworkId)
-	w.Write([]byte{})
+	emptyResponse(w)
+	Info.Printf("Destroy network %s", delete.NetworkID)
 }
 
 type endpointCreate struct {
-	NetworkId  string
-	EndpointId string
+	NetworkID  string
+	EndpointID string
+	Interfaces []*iface
 	Options    map[string]interface{}
+}
+
+type iface struct {
+	ID         int
+	SrcName    string
+	DstName    string
+	Address    string
+	MacAddress string
+}
+
+type endpointResponse struct {
+	Interfaces []*iface
 }
 
 func createEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -187,13 +211,14 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	Debug.Printf("Create endpoint request %+v", &create)
-	netID := create.NetworkId
-	endID := create.EndpointId
+	netID := create.NetworkID
+	endID := create.EndpointID
 
 	if netID != network {
-		notFound(w, r)
+		errorResponsef(w, "No such network %s", netID)
 		return
 	}
+
 	ip, err := getIP(endID)
 	if err != nil {
 		Warning.Printf("Error allocating IP:", err)
@@ -201,6 +226,84 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix, _ := subnet.Mask.Size()
+	mac := makeMac(ip)
+
+	respIface := &iface{
+		Address: (&net.IPNet{
+			ip,
+			net.CIDRMask(prefix, 32),
+		}).String(),
+		MacAddress: mac,
+	}
+	resp := &endpointResponse{
+		Interfaces: []*iface{respIface},
+	}
+
+	Debug.Printf("Create: %+v", &resp)
+	objectResponse(w, resp)
+	Info.Printf("Create endpoint %s %+v", endID, resp)
+}
+
+type endpointDelete struct {
+	NetworkID  string
+	EndpointID string
+}
+
+func deleteEndpoint(w http.ResponseWriter, r *http.Request) {
+	var delete endpointDelete
+	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Delete endpoint request: %+v", &delete)
+	// TODO
+	emptyResponse(w)
+	Info.Printf("Delete endpoint %s", delete.EndpointID)
+}
+
+type endpointInfoReq struct {
+	NetworkID  string
+	EndpointID string
+}
+
+type endpointInfo struct {
+	Value map[string]interface{}
+}
+
+func infoEndpoint(w http.ResponseWriter, r *http.Request) {
+	var info endpointInfoReq
+	if err := json.NewDecoder(r.Body).Decode(&info); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Endpoint info request: %+v", &info)
+	objectResponse(w, &endpointInfo{Value: map[string]interface{}{}})
+	Info.Printf("Endpoint info %s", info.EndpointID)
+}
+
+type join struct {
+	NetworkID  string
+	EndpointID string
+	SandboxKey string
+	Options    map[string]interface{}
+}
+
+type joinResponse struct {
+	HostsPath      string
+	ResolvConfPath string
+	Gateway        string
+	InterfaceNames []*iface
+}
+
+func joinEndpoint(w http.ResponseWriter, r *http.Request) {
+	var j join
+	if err := json.NewDecoder(r.Body).Decode(&j); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	Debug.Printf("Join request: %+v", &j)
+
+	endID := j.EndpointID
 
 	// use the endpoint ID bytes to make veth names, and cross fingers
 	localName := "vethwel" + endID[:5]
@@ -225,98 +328,24 @@ func createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respIface := &iface{
+	ifname := &iface{
 		SrcName: guestName,
 		DstName: "ethwe",
-		Address: (&net.IPNet{
-			ip,
-			net.CIDRMask(prefix, 32),
-		}).String(),
+		ID:      0,
 	}
-	resp := &sbInfo{
-		Interfaces:  []*iface{respIface},
-		Gateway:     nil,
-		GatewayIPv6: nil,
+	res := &joinResponse{
+		InterfaceNames: []*iface{ifname},
 	}
 
-	Debug.Printf("Plug: %+v", &resp)
-	if err = json.NewEncoder(w).Encode(&resp); err != nil {
-		sendError(w, "Could not JSON encode response", http.StatusInternalServerError)
-		return
-	}
-	Info.Printf("Create endpoint %s %+v", endID, resp)
-}
-
-type endpointDelete struct {
-	NetworkId  string
-	EndpointId string
-}
-
-func deleteEndpoint(w http.ResponseWriter, r *http.Request) {
-	var delete endpointDelete
-	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
-		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
-		return
-	}
-	Debug.Printf("Delete endpoint request: %+v", &delete)
-	// TODO
-	w.Write([]byte{})
-	Info.Printf("Delete endpoint %s", delete.EndpointId)
-}
-
-type endpointInfoReq struct {
-	NetworkId  string
-	EndpointId string
-}
-
-func infoEndpoint(w http.ResponseWriter, r *http.Request) {
-	var info endpointInfoReq
-	if err := json.NewDecoder(r.Body).Decode(&info); err != nil {
-		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
-		return
-	}
-	Debug.Printf("Endpoint info request: %+v", &info)
-	var response map[string]interface{}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		sendError(w, "Error encoding JSON response: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	Info.Printf("Endpoint info %s", info.EndpointId)
-}
-
-type join struct {
-	NetworkId  string
-	EndpointId string
-	SandboxKey string
-	Options    map[string]interface{}
-}
-
-type joinResponse struct {
-	HostPath string
-}
-
-func joinEndpoint(w http.ResponseWriter, r *http.Request) {
-	var j join
-	if err := json.NewDecoder(r.Body).Decode(&j); err != nil {
-		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
-		return
-	}
-	Debug.Printf("Join request: %+v", &j)
-	// TODO
-	if err := json.NewEncoder(w).Encode(&joinResponse{""}); err != nil {
-		sendError(w, "Could not JSON encode response", http.StatusInternalServerError)
-		return
-	}
-	Info.Printf("Join endpoint %s:%s to %s", j.NetworkId, j.EndpointId, j.SandboxKey)
+	objectResponse(w, res)
+	Info.Printf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)
 }
 
 type leave struct {
-	NetworkId  string
-	EndpointId string
+	NetworkID  string
+	EndpointID string
 	Options    map[string]interface{}
 }
-
-type leaveResponse struct{}
 
 func leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	var l leave
@@ -326,11 +355,8 @@ func leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO
 	Debug.Printf("Leave request: %+v", &l)
-	if err := json.NewEncoder(w).Encode(&leaveResponse{}); err != nil {
-		sendError(w, "Error encoding JSON response: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	Info.Printf("Leave %s:%s", l.NetworkId, l.EndpointId)
+	emptyResponse(w)
+	Info.Printf("Leave %s:%s", l.NetworkID, l.EndpointID)
 }
 
 // ===
